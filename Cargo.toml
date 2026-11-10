@@ -7,5 +7,5 @@ edition = "2024"
 anyhow = "1"
 glam = "0.33"
 memmap2 = "0.9"
-multires_rs = { path = "../multires_rs" }
+multires_rs = { git = "https://github.com/nicholasbl/multires_rs.git", branch = "main" }
 
