@@ -942,11 +942,14 @@ fn resolve_policies(
     let mut policies = dataset
         .fields()
         .iter()
-        .map(|_| ResolvedFieldCodec {
-            selection: MsgChunkCodecSelection::AutoLossless,
-            error_tolerance: None,
-            physical_offset: 0.0,
-            physical_scale: 1.0,
+        .map(|field| {
+            let (physical_offset, physical_scale) = physical_domain(field.normalization());
+            ResolvedFieldCodec {
+                selection: MsgChunkCodecSelection::AutoLossless,
+                error_tolerance: None,
+                physical_offset,
+                physical_scale,
+            }
         })
         .collect::<Vec<_>>();
     let mut assigned = vec![false; policies.len()];
@@ -962,15 +965,23 @@ fn resolve_policies(
             requested.field
         );
         validate_codec_policy(dataset.fields()[slot].scalar_type(), requested)?;
+        let (physical_offset, physical_scale) =
+            physical_domain(dataset.fields()[slot].normalization());
         assigned[slot] = true;
         policies[slot] = ResolvedFieldCodec {
             selection: requested.selection,
             error_tolerance: requested.error_tolerance,
-            physical_offset: 0.0,
-            physical_scale: 1.0,
+            physical_offset,
+            physical_scale,
         };
     }
     Ok(policies)
+}
+
+fn physical_domain(normalization: Option<MsgNormalization>) -> (f64, f64) {
+    normalization.map_or((0.0, 1.0), |normalization| {
+        (normalization.min, normalization.max - normalization.min)
+    })
 }
 
 fn validate_codec_policy(scalar_type: MsgScalarType, policy: &MsgFieldCodec) -> Result<()> {
@@ -1367,6 +1378,35 @@ mod tests {
             view.decode()?.field("density").unwrap().normalization(),
             None
         );
+        Ok(())
+    }
+
+    #[test]
+    fn normalized_field_errors_use_original_physical_domain() -> Result<()> {
+        let mut dataset = sample_dataset();
+        let field = dataset.field_mut("density").unwrap();
+        field.levels_mut()[0]
+            .values_mut()
+            .map_values(|value| ((value - 40.0) / 5.0).clamp(0.0, 1.0));
+        field.set_normalization(Some(MsgNormalization {
+            min: 40.0,
+            max: 45.0,
+        }));
+        let policies = resolve_policies(
+            &dataset,
+            &MsgWriteOptions {
+                codecs: vec![MsgFieldCodec {
+                    field: "density".to_owned(),
+                    selection: MsgChunkCodecSelection::AutoSmallest,
+                    error_tolerance: Some(MsgErrorTolerance {
+                        absolute: 0.01,
+                        relative_percent: 0.1,
+                    }),
+                }],
+            },
+        )?;
+        assert_eq!(policies[0].physical_offset, 40.0);
+        assert_eq!(policies[0].physical_scale, 5.0);
         Ok(())
     }
 
