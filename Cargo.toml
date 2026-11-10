@@ -10,6 +10,6 @@ bytemuck = "1"
 glam = "0.33"
 memmap2 = "0.9"
 memchr = "2"
-multires_rs = { path = "../multires_rs" }
+multires_rs = { git = "https://github.com/nicholasbl/multires_rs.git", branch = "main" }
 rayon = "1.10"
 roxmltree = "0.21"
