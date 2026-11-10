@@ -4,6 +4,13 @@ use glam::{DVec3, IVec3, UVec3};
 
 use crate::{MsgGeometry, MsgScalarGrid, MsgScalarType, sparse::SparseGrid3};
 
+/// Original physical bounds retained for a field normalized into `[0, 1]`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MsgNormalization {
+    pub min: f64,
+    pub max: f64,
+}
+
 /// A validation failure for the in-memory MSG model.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MsgValidationError {
@@ -95,6 +102,7 @@ impl MsgFieldLevel {
 pub struct MsgField {
     name: String,
     scalar_type: MsgScalarType,
+    normalization: Option<MsgNormalization>,
     levels: Vec<MsgFieldLevel>,
 }
 
@@ -107,6 +115,7 @@ impl MsgField {
         Self {
             name: name.into(),
             scalar_type,
+            normalization: None,
             levels,
         }
     }
@@ -117,6 +126,14 @@ impl MsgField {
 
     pub fn scalar_type(&self) -> MsgScalarType {
         self.scalar_type
+    }
+
+    pub fn normalization(&self) -> Option<MsgNormalization> {
+        self.normalization
+    }
+
+    pub fn set_normalization(&mut self, normalization: Option<MsgNormalization>) {
+        self.normalization = normalization;
     }
 
     pub fn levels(&self) -> &[MsgFieldLevel] {
@@ -375,6 +392,17 @@ fn validate_field(field: &MsgField, levels: &[MsgLevel]) -> Result<(), MsgValida
             levels.len()
         )));
     }
+    if let Some(normalization) = field.normalization {
+        if !normalization.min.is_finite()
+            || !normalization.max.is_finite()
+            || normalization.min >= normalization.max
+        {
+            return Err(MsgValidationError::new(format!(
+                "field {:?} has invalid normalization bounds",
+                field.name
+            )));
+        }
+    }
 
     for (index, (field_level, level)) in field.levels.iter().zip(levels).enumerate() {
         if field_level.values.scalar_type() != field.scalar_type {
@@ -396,6 +424,20 @@ fn validate_field(field: &MsgField, levels: &[MsgLevel]) -> Result<(), MsgValida
                 "field {:?} level {index} contains a non-finite value",
                 field.name
             )));
+        }
+        if field.normalization.is_some() {
+            let mut outside_unit_interval = false;
+            field_level
+                .values
+                .for_each_value_in_aabb(field_level.values.bounds_aabb(), |_, value| {
+                    outside_unit_interval |= !(0.0..=1.0).contains(&value)
+                });
+            if outside_unit_interval {
+                return Err(MsgValidationError::new(format!(
+                    "normalized field {:?} level {index} contains a value outside [0, 1]",
+                    field.name
+                )));
+            }
         }
     }
     Ok(())

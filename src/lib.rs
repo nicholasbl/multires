@@ -24,7 +24,7 @@ pub use archive::{
 };
 pub use dataset::{
     ChunkValueRange, MsgDataset, MsgField, MsgFieldAcceleration, MsgFieldLevel, MsgLevel,
-    MsgValidationError,
+    MsgNormalization, MsgValidationError,
 };
 pub use decimate::{
     DecimateErrorMode, DecimateOptions, DecimateParallelOptions, DecimatePipelineOptions,

@@ -199,6 +199,12 @@ where
         self.chunks.values().map(Chunk::present_count).sum()
     }
 
+    pub(crate) fn map_values(&mut self, mut map: impl FnMut(T) -> T) {
+        for chunk in self.chunks.values_mut() {
+            chunk.map_values(&mut map);
+        }
+    }
+
     /// Returns a copied value when the voxel is present. Returns `None` when the
     /// coordinate is out of bounds or the voxel is unset.
     pub fn get(&self, pos: UVec3) -> Option<T> {

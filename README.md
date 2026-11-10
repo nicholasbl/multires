@@ -11,6 +11,14 @@ all fields are finite scalar point data, and every field has its own unique spar
 topology. Missing points mean “not present,” not zero. If you wish to store a “background”
 value, you must do so explicitly.
 
+A field whose values have been normalized to `[0, 1]` may retain its original
+physical bounds as `MsgNormalization { min, max }`. The metadata is available
+from owned `MsgField` values and zero-copy archive field views, survives
+transcoding, and is shown by `msg-probe`. Normalization is an explicit data
+transformation performed by an importer such as `msg-convert`; archive codecs
+do not normalize logical values implicitly. Archives written before this
+metadata extension remain readable and report no normalization bounds.
+
 The API has two complementary entry points:
 
 - `MsgDataset`

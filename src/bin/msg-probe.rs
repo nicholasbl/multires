@@ -62,14 +62,26 @@ fn main() -> Result<()> {
         );
     }
     for field in fields {
+        let normalization = field
+            .normalization
+            .map_or_else(String::new, |normalization| {
+                format!(
+                    ", normalized from [{:.7e}, {:.7e}]",
+                    normalization.min, normalization.max
+                )
+            });
         match field.error_tolerance {
             Some(error) => println!(
-                "  field {:?}: {:?}, error absolute={:.7e}, relative-percent={:.7}%",
-                field.name, field.scalar_type, error.absolute, error.relative_percent
+                "  field {:?}: {:?}, error absolute={:.7e}, relative-percent={:.7}%{}",
+                field.name,
+                field.scalar_type,
+                error.absolute,
+                error.relative_percent,
+                normalization
             ),
             None => println!(
-                "  field {:?}: {:?}, lossless",
-                field.name, field.scalar_type
+                "  field {:?}: {:?}, lossless{}",
+                field.name, field.scalar_type, normalization
             ),
         }
     }

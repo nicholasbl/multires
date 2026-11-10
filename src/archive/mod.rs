@@ -12,7 +12,7 @@ use rkyv::rancor::Error;
 
 use crate::{
     ChunkValueRange, MsgDataset, MsgField, MsgFieldAcceleration, MsgFieldLevel, MsgGeometry,
-    MsgLevel, MsgScalarGrid, MsgScalarType,
+    MsgLevel, MsgNormalization, MsgScalarGrid, MsgScalarType,
     sparse::{CHUNK_BITS, CHUNK_SIZE, CHUNK_VOLUME, MASK_WORDS},
 };
 use format::*;
@@ -21,6 +21,9 @@ pub const MSG_FORMAT_MAGIC: u32 = u32::from_le_bytes(*b"MSG\0");
 pub const MSG_FORMAT_VERSION: u32 = 1;
 const PREFIX_LENGTH: u64 = 8;
 const FOOTER_LENGTH: u64 = 8;
+const NORMALIZATION_MAGIC: [u8; 8] = *b"MSGNORM\0";
+const NORMALIZATION_TRAILER_LENGTH: usize = 16;
+const NORMALIZATION_RECORD_LENGTH: usize = 24;
 
 /// A concrete codec available for scalar chunks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,6 +82,7 @@ pub struct MsgArchive<'a> {
     bytes: &'a [u8],
     data_end: usize,
     archive: &'a ArchivedMsgArchiveHeader,
+    normalizations: Vec<Option<MsgNormalization>>,
 }
 
 /// Owner for a read-only memory mapping. Call [`MappedMsgArchive::view`] to
@@ -100,6 +104,7 @@ pub struct MsgArchiveFieldInfo<'a> {
     pub name: &'a str,
     pub scalar_type: MsgScalarType,
     pub error_tolerance: Option<MsgErrorTolerance>,
+    pub normalization: Option<MsgNormalization>,
 }
 
 /// Borrowed view of one scalar field in an MSG archive.
@@ -108,6 +113,7 @@ pub struct MsgArchiveField<'a> {
     data_end: usize,
     archive: &'a ArchivedMsgArchiveHeader,
     field: &'a ArchivedFieldRecord,
+    normalization: Option<MsgNormalization>,
 }
 
 /// Borrowed, lazily decoded view of one archived field level.
@@ -201,31 +207,37 @@ impl<'a> MsgArchive<'a> {
     }
 
     pub fn fields(&self) -> impl ExactSizeIterator<Item = MsgArchiveFieldInfo<'_>> + '_ {
-        self.archive.fields.iter().map(|field| MsgArchiveFieldInfo {
-            name: field.name.as_str(),
-            scalar_type: scalar_type_from_tag(field.scalar_type)
-                .expect("validated MSG scalar type"),
-            error_tolerance: match field.error_tolerance_kind {
-                0 => None,
-                1 => Some(MsgErrorTolerance {
-                    absolute: field.error_absolute.to_native(),
-                    relative_percent: field.error_relative_percent.to_native(),
-                }),
-                _ => unreachable!("validated MSG error tolerance kind"),
-            },
-        })
+        self.archive
+            .fields
+            .iter()
+            .zip(&self.normalizations)
+            .map(|(field, &normalization)| MsgArchiveFieldInfo {
+                name: field.name.as_str(),
+                scalar_type: scalar_type_from_tag(field.scalar_type)
+                    .expect("validated MSG scalar type"),
+                error_tolerance: match field.error_tolerance_kind {
+                    0 => None,
+                    1 => Some(MsgErrorTolerance {
+                        absolute: field.error_absolute.to_native(),
+                        relative_percent: field.error_relative_percent.to_native(),
+                    }),
+                    _ => unreachable!("validated MSG error tolerance kind"),
+                },
+                normalization,
+            })
     }
 
     pub fn field(&self, name: &str) -> Option<MsgArchiveField<'a>> {
         self.archive
             .fields
             .iter()
-            .find(|field| field.name == name)
-            .map(|field| MsgArchiveField {
+            .position(|field| field.name == name)
+            .map(|index| MsgArchiveField {
                 bytes: self.bytes,
                 data_end: self.data_end,
                 archive: self.archive,
-                field,
+                field: &self.archive.fields[index],
+                normalization: self.normalizations[index],
             })
     }
 
@@ -263,6 +275,10 @@ impl<'a> MsgArchiveField<'a> {
 
     pub fn scalar_type(&self) -> MsgScalarType {
         scalar_type_from_tag(self.field.scalar_type).expect("validated MSG scalar type")
+    }
+
+    pub fn normalization(&self) -> Option<MsgNormalization> {
+        self.normalization
     }
 
     pub fn level_count(&self) -> usize {
@@ -654,10 +670,42 @@ pub fn write_msg(
         fields,
     };
     let header = rkyv::to_bytes::<Error>(&archive).context("serializing MSG header")?;
-    align_writer(dest, &mut offset)?;
+    write_normalizations(dataset, dest, &mut offset)?;
     let header_offset = offset;
     dest.write_all(&header)?;
     dest.write_all(&header_offset.to_le_bytes())?;
+    Ok(())
+}
+
+fn write_normalizations(
+    dataset: &MsgDataset,
+    dest: &mut impl Write,
+    offset: &mut u64,
+) -> Result<()> {
+    align_writer(dest, offset)?;
+    let record_count = u64::try_from(dataset.fields().len())?;
+    let payload_length = 8_u64
+        .checked_add(
+            record_count
+                .checked_mul(NORMALIZATION_RECORD_LENGTH as u64)
+                .context("normalization metadata length overflow")?,
+        )
+        .context("normalization metadata length overflow")?;
+    dest.write_all(&record_count.to_le_bytes())?;
+    for field in dataset.fields() {
+        let (kind, min, max) = match field.normalization() {
+            None => (0_u64, 0.0, 0.0),
+            Some(normalization) => (1, normalization.min, normalization.max),
+        };
+        dest.write_all(&kind.to_le_bytes())?;
+        dest.write_all(&min.to_le_bytes())?;
+        dest.write_all(&max.to_le_bytes())?;
+    }
+    dest.write_all(&NORMALIZATION_MAGIC)?;
+    dest.write_all(&payload_length.to_le_bytes())?;
+    *offset = offset
+        .checked_add(payload_length + NORMALIZATION_TRAILER_LENGTH as u64)
+        .context("MSG output offset overflow")?;
     Ok(())
 }
 
@@ -682,14 +730,22 @@ fn range_max_abs_error(encoded: &ScalarGridRecord, cube_origin: UVec3, point_bou
 }
 
 pub fn view_msg(bytes: &[u8]) -> Result<MsgArchive<'_>> {
-    let (data_end, header) = archive_header(bytes)?;
+    let (data_end, header, mut normalizations) = archive_header(bytes)?;
     let archive = rkyv::access::<ArchivedMsgArchiveHeader, Error>(header)
         .context("validating MSG metadata")?;
     validate_archive(archive, bytes, data_end)?;
+    if normalizations.is_empty() {
+        normalizations.resize(archive.fields.len(), None);
+    }
+    ensure!(
+        normalizations.len() == archive.fields.len(),
+        "normalization metadata field count mismatch"
+    );
     Ok(MsgArchive {
         bytes,
         data_end,
         archive,
+        normalizations,
     })
 }
 
@@ -814,11 +870,9 @@ fn decode_msg(view: &MsgArchive<'_>, requested: Option<&[&str]>) -> Result<MsgDa
             });
             field_levels.push(field_level);
         }
-        dataset.push_validated_field(MsgField::new(
-            field.name.as_str(),
-            scalar_type,
-            field_levels,
-        ));
+        let mut decoded_field = MsgField::new(field.name.as_str(), scalar_type, field_levels);
+        decoded_field.set_normalization(view.normalizations[slot]);
+        dataset.push_validated_field(decoded_field);
     }
     Ok(dataset)
 }
@@ -998,7 +1052,7 @@ fn align_writer(dest: &mut impl Write, offset: &mut u64) -> Result<()> {
     Ok(())
 }
 
-fn archive_header(bytes: &[u8]) -> Result<(usize, &[u8])> {
+fn archive_header(bytes: &[u8]) -> Result<(usize, &[u8], Vec<Option<MsgNormalization>>)> {
     ensure!(
         bytes.len() >= (PREFIX_LENGTH + FOOTER_LENGTH) as usize,
         "MSG file is truncated"
@@ -1020,7 +1074,68 @@ fn archive_header(bytes: &[u8]) -> Result<(usize, &[u8])> {
         offset >= PREFIX_LENGTH as usize && offset < footer_start,
         "MSG header offset is out of bounds"
     );
-    Ok((offset, &bytes[offset..footer_start]))
+    let (data_end, normalizations) = normalization_metadata(bytes, offset)?;
+    Ok((data_end, &bytes[offset..footer_start], normalizations))
+}
+
+fn normalization_metadata(
+    bytes: &[u8],
+    header_offset: usize,
+) -> Result<(usize, Vec<Option<MsgNormalization>>)> {
+    if header_offset < PREFIX_LENGTH as usize + NORMALIZATION_TRAILER_LENGTH {
+        return Ok((header_offset, Vec::new()));
+    }
+    let trailer_start = header_offset - NORMALIZATION_TRAILER_LENGTH;
+    if bytes[trailer_start..trailer_start + 8] != NORMALIZATION_MAGIC {
+        return Ok((header_offset, Vec::new()));
+    }
+    let payload_length = usize::try_from(u64::from_le_bytes(
+        bytes[trailer_start + 8..header_offset].try_into().unwrap(),
+    ))?;
+    let payload_start = trailer_start
+        .checked_sub(payload_length)
+        .context("normalization metadata extends before the archive")?;
+    ensure!(
+        payload_start >= PREFIX_LENGTH as usize && payload_start.is_multiple_of(8),
+        "invalid normalization metadata offset"
+    );
+    ensure!(payload_length >= 8, "normalization metadata is truncated");
+    let count = usize::try_from(u64::from_le_bytes(
+        bytes[payload_start..payload_start + 8].try_into().unwrap(),
+    ))?;
+    ensure!(
+        payload_length
+            == 8_usize
+                .checked_add(
+                    count
+                        .checked_mul(NORMALIZATION_RECORD_LENGTH)
+                        .context("normalization metadata length overflow")?,
+                )
+                .context("normalization metadata length overflow")?,
+        "invalid normalization metadata length"
+    );
+    let mut normalizations = Vec::with_capacity(count);
+    for index in 0..count {
+        let start = payload_start + 8 + index * NORMALIZATION_RECORD_LENGTH;
+        let kind = u64::from_le_bytes(bytes[start..start + 8].try_into().unwrap());
+        let min = f64::from_le_bytes(bytes[start + 8..start + 16].try_into().unwrap());
+        let max = f64::from_le_bytes(bytes[start + 16..start + 24].try_into().unwrap());
+        normalizations.push(match kind {
+            0 => {
+                ensure!(min == 0.0 && max == 0.0, "empty normalization has bounds");
+                None
+            }
+            1 => {
+                ensure!(
+                    min.is_finite() && max.is_finite() && min < max,
+                    "invalid normalization bounds"
+                );
+                Some(MsgNormalization { min, max })
+            }
+            _ => bail!("unsupported normalization metadata kind {kind}"),
+        });
+    }
+    Ok((payload_start, normalizations))
 }
 
 fn block_slice<'a>(
@@ -1191,20 +1306,66 @@ mod tests {
 
     #[test]
     fn archive_round_trip_and_selective_decode() -> Result<()> {
-        let dataset = sample_dataset();
+        let mut dataset = sample_dataset();
+        let field = dataset.field_mut("density").unwrap();
+        field.levels_mut()[0]
+            .values_mut()
+            .map_values(|value| ((value - 40.0) / 5.0).clamp(0.0, 1.0));
+        field.set_normalization(Some(MsgNormalization {
+            min: 40.0,
+            max: 45.0,
+        }));
         let mut bytes = Vec::new();
         write_msg(&dataset, &MsgWriteOptions::default(), &mut bytes)?;
         assert_eq!(&bytes[..4], b"MSG\0");
         let view = view_msg(&bytes)?;
         assert_eq!(view.simulation_time(), 2.5);
         assert_eq!(view.field_names().collect::<Vec<_>>(), vec!["density"]);
+        assert_eq!(
+            view.field("density").unwrap().normalization(),
+            Some(MsgNormalization {
+                min: 40.0,
+                max: 45.0
+            })
+        );
         let decoded = view.decode_fields(&["density"])?;
+        assert_eq!(
+            decoded.fields()[0].normalization(),
+            Some(MsgNormalization {
+                min: 40.0,
+                max: 45.0
+            })
+        );
         assert!(decoded.fields()[0].levels()[0].acceleration().is_some());
         assert_eq!(
             decoded.fields()[0].levels()[0]
                 .values()
                 .get(UVec3::new(1, 2, 3)),
-            Some(42.25)
+            Some(0.45)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn archives_without_normalization_extension_remain_readable() -> Result<()> {
+        let dataset = sample_dataset();
+        let mut bytes = Vec::new();
+        write_msg(&dataset, &MsgWriteOptions::default(), &mut bytes)?;
+        let header_offset = usize::try_from(u64::from_le_bytes(
+            bytes[bytes.len() - FOOTER_LENGTH as usize..]
+                .try_into()
+                .unwrap(),
+        ))?;
+        let (data_end, _, _) = archive_header(&bytes)?;
+        bytes.drain(data_end..header_offset);
+        let footer_start = bytes.len() - FOOTER_LENGTH as usize;
+        bytes[footer_start..].copy_from_slice(&(data_end as u64).to_le_bytes());
+
+        let view = view_msg(&bytes)?;
+        assert_eq!(view.field("density").unwrap().normalization(), None);
+        assert_eq!(
+            view.decode()?.field("density").unwrap().normalization(),
+            None
         );
         Ok(())
     }

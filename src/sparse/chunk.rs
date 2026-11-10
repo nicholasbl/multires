@@ -24,6 +24,17 @@ impl<T> Chunk<T>
 where
     T: Copy + PartialEq,
 {
+    pub(super) fn map_values(&mut self, mut map: impl FnMut(T) -> T) {
+        match self {
+            Self::Uniform { value, .. } => *value = map(*value),
+            Self::Dense { values, .. } => {
+                for value in values {
+                    *value = map(*value);
+                }
+            }
+        }
+    }
+
     #[inline]
     pub(super) fn is_empty(&self) -> bool {
         match self {

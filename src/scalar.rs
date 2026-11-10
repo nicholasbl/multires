@@ -44,6 +44,10 @@ impl MsgScalarGrid {
         }
     }
 
+    pub(crate) fn bounds_aabb(&self) -> Aabb3u {
+        Aabb3u::full_grid(self.bounds())
+    }
+
     pub fn present_point_count(&self) -> usize {
         match self {
             Self::F32(grid) => grid.present_voxel_count(),
@@ -76,6 +80,14 @@ impl MsgScalarGrid {
         match self {
             Self::F32(grid) => grid.clear(point),
             Self::F64(grid) => grid.clear(point),
+        }
+    }
+
+    /// Transform all stored values while preserving sparse topology.
+    pub fn map_values(&mut self, mut map: impl FnMut(f64) -> f64) {
+        match self {
+            Self::F32(grid) => grid.map_values(|value| map(f64::from(value)) as f32),
+            Self::F64(grid) => grid.map_values(map),
         }
     }
 
