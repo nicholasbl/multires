@@ -1,0 +1,23 @@
+[package]
+name = "msg_convert"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "msg-convert"
+path = "src/main.rs"
+
+[[bin]]
+name = "msg-probe"
+path = "src/bin/msg-probe.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+glam = "0.33"
+msg_amrex = { git = "https://github.com/nicholasbl/msg_amrex.git", branch = "main" }
+msg_vti = { git = "https://github.com/nicholasbl/msg_vti.git", branch = "main" }
+multires_rs = { git = "https://github.com/nicholasbl/multires_rs.git", branch = "main" }
+serde = { version = "1", features = ["derive"] }
+toml = "0.9"
+

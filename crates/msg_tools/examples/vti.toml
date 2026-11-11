@@ -1,0 +1,30 @@
+# Convert VTK XML ImageData into an MSG archive.
+[input]
+path = "simulation.vti"
+# format = "vti" # Optional because the .vti extension is recognized.
+
+[output]
+path = "simulation.msg"
+
+[source]
+# An empty or omitted list imports every PointData array. Multi-component
+# arrays are split into scalar MSG fields; velocity typically becomes
+# velocity_x, velocity_y, and velocity_z.
+fields = ["density", "velocity"]
+
+[encoding.defaults]
+codec = "auto:lossless"
+
+[[encoding.fields]]
+# Use the final component name rather than the source VTI array name.
+name = "velocity_x"
+codec = "quantized:u16"
+error = { relative_percent = 0.1 }
+
+[[encoding.fields]]
+# Normalization does not require a codec override. This entry also selects a
+# lossy codec, whose absolute error remains measured in physical units.
+name = "density"
+normalize = { min = 0.0, max = 1.0 }
+codec = "affine-residual:u16"
+error = { absolute = 0.000001 }

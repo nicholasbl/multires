@@ -1,0 +1,36 @@
+# Convert an AMReX plotfile directory into an MSG archive.
+[input]
+path = "plt00010"
+# Plotfile directories have no extension, so declaring the format avoids
+# depending on the path already existing and containing a Header file.
+format = "amrex"
+
+[output]
+path = "plt00010.msg"
+# format = "msg" # Optional because the .msg extension is recognized.
+
+[source]
+# Select source variables in output order. A bare name uses f32. Use an inline
+# table to retain f64 precision in the logical MSG field.
+fields = [
+    "temperature",
+    { name = "density", precision = "f64" },
+]
+
+[source.amrex]
+# reject stops on NaN, infinity, or an unrepresentable source value. zero
+# replaces such values with physical zero and reports each field's count.
+invalid_values = "reject"
+
+[encoding.defaults]
+# Applies to every selected output field unless overridden below.
+codec = "auto:lossless"
+
+[[encoding.fields]]
+# Encoding entries name final MSG fields. Normalization maps and clamps the
+# physical interval into [0, 1] and retains the original bounds as metadata.
+# Codec error tolerances remain expressed in original physical units.
+name = "temperature"
+normalize = { min = 200.0, max = 2000.0 }
+codec = "auto:smallest"
+error = { absolute = 0.1, relative_percent = 0.01 }

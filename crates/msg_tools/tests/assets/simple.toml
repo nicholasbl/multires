@@ -1,0 +1,6 @@
+[source]
+fields = ["density"]
+
+[[encoding.fields]]
+name = "density"
+codec = "dense:f32"

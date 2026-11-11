@@ -1,0 +1,31 @@
+# Compact reference for every supported MSG codec.
+[input]
+path = "simulation.vti"
+
+[output]
+path = "simulation.msg"
+
+[source]
+fields = ["density"]
+
+[encoding.defaults]
+# Supported values:
+#   auto:lossless        exact native values; no error is allowed
+#   auto:smallest        smallest encoding satisfying an error budget
+#   uniform:f64          one value per chunk; requires an error
+#   dense:f32            direct f32; f64 input requires an error
+#   dense:f64            direct f64; valid only for logical f64 fields
+#   quantized:u8         8-bit chunk-local quantization; requires an error
+#   quantized:u16        16-bit chunk-local quantization; requires an error
+#   quantized:u32        32-bit chunk-local quantization; requires an error
+#   affine:f64           3D affine fit; requires an error
+#   affine-residual:u8   affine fit plus 8-bit residuals; requires an error
+#   affine-residual:u16  affine fit plus 16-bit residuals; requires an error
+#   affine-residual:u32  affine fit plus 32-bit residuals; requires an error
+#
+# If encoding defaults are omitted, the writer uses auto:lossless.
+codec = "auto:smallest"
+error = { absolute = 0.000001, relative_percent = 0.01 }
+
+# Add [[encoding.fields]] entries to replace these defaults for individual
+# final MSG fields. Each field may appear only once.
