@@ -1,7 +1,7 @@
 # msg_vti
 
 `msg_vti` is a library-only importer for converting VTK XML ImageData (`.vti`)
-files into the source-independent `multires_rs::MsgDataset` model.
+files into the source-independent `multires::MsgDataset` model.
 
 ```rust
 use msg_vti::{VtiImportOptions, import_vti};
@@ -11,5 +11,5 @@ println!("imported {} fields", dataset.fields().len());
 # Ok::<(), anyhow::Error>(())
 ```
 
-Use the sibling `msg_convert` command for TOML-driven VTI or AMReX conversion
+Use the sibling `msg_tools` package for TOML-driven VTI or AMReX conversion
 and MSG archive encoding.

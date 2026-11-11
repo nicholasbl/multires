@@ -9,7 +9,7 @@ use anyhow::{Context, Result, bail, ensure};
 use clap::{Parser, ValueEnum};
 use msg_amrex::{AmrexField, AmrexImportOptions, InvalidValuePolicy, PlotFile, import_amrex};
 use msg_vti::{VtiImportOptions, import_vti};
-use multires_rs::{
+use multires::{
     MsgChunkCodec, MsgChunkCodecSelection, MsgDataset, MsgErrorTolerance, MsgFieldCodec,
     MsgNormalization, MsgScalarType, MsgWriteOptions, write_msg,
 };
@@ -829,7 +829,7 @@ normalize = { min = 0.0, max = 2.0 }
         let mut bytes = Vec::new();
         write_msg(&dataset, &MsgWriteOptions::default(), &mut bytes).unwrap();
         assert_eq!(
-            multires_rs::view_msg(&bytes)
+            multires::view_msg(&bytes)
                 .unwrap()
                 .field("density")
                 .unwrap()

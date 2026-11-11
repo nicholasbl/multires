@@ -392,16 +392,15 @@ fn validate_field(field: &MsgField, levels: &[MsgLevel]) -> Result<(), MsgValida
             levels.len()
         )));
     }
-    if let Some(normalization) = field.normalization {
-        if !normalization.min.is_finite()
+    if let Some(normalization) = field.normalization
+        && (!normalization.min.is_finite()
             || !normalization.max.is_finite()
-            || normalization.min >= normalization.max
-        {
-            return Err(MsgValidationError::new(format!(
-                "field {:?} has invalid normalization bounds",
-                field.name
-            )));
-        }
+            || normalization.min >= normalization.max)
+    {
+        return Err(MsgValidationError::new(format!(
+            "field {:?} has invalid normalization bounds",
+            field.name
+        )));
     }
 
     for (index, (field_level, level)) in field.levels.iter().zip(levels).enumerate() {

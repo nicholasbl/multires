@@ -5,7 +5,7 @@ use std::{
 };
 
 use glam::{DMat4, DVec3, IVec3, UVec3};
-use multires_rs::{
+use multires::{
     MappedMsgArchive, MsgDataset, MsgField, MsgFieldLevel, MsgGeometry, MsgLevel, MsgScalarGrid,
     MsgScalarType, MsgWriteOptions, read_msg, write_msg,
 };
@@ -148,7 +148,7 @@ impl TemporaryMsg {
     fn new() -> Self {
         let id = NEXT_TEMPORARY_ID.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "multires_rs-api-workflow-{}-{id}.msg",
+            "multires-api-workflow-{}-{id}.msg",
             std::process::id()
         ));
         Self { path }

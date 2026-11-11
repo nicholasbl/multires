@@ -1,8 +1,8 @@
 //! Import AMReX plotfiles into source-independent MSG datasets.
 //!
 //! This library owns AMReX plotfile reading and conversion into
-//! [`multires_rs::MsgDataset`]. Command-line conversion and MSG archive output
-//! policy live in the `msg_convert` crate.
+//! [`multires::MsgDataset`]. Command-line conversion and MSG archive output
+//! policy live in the `msg_tools` crate.
 
 mod import;
 mod input;

@@ -9,7 +9,7 @@ use std::{
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use glam::{DMat4, DVec3, IVec3, UVec3};
-use multires_rs::{
+use multires::{
     IsosurfaceOptions, MappedMsgArchive, MsgChunkBuffer, MsgChunkCodec, MsgChunkCodecSelection,
     MsgDataset, MsgErrorTolerance, MsgField, MsgFieldCodec, MsgFieldLevel, MsgGeometry, MsgLevel,
     MsgScalarGrid, MsgScalarType, MsgWriteOptions, Surface, isosurface, isosurface_archive,

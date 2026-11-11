@@ -710,7 +710,7 @@ pub fn write_msg(
         .map(|_| Vec::with_capacity(dataset.levels().len()))
         .collect::<Vec<_>>();
 
-    for level_index in 0..dataset.levels().len() {
+    for (level_index, _) in dataset.levels().iter().enumerate() {
         for (field_index, field) in dataset.fields().iter().enumerate() {
             let field_level = &field.levels()[level_index];
             let field_acceleration = &acceleration[field_index][level_index];
@@ -1194,7 +1194,9 @@ fn align_writer(dest: &mut impl Write, offset: &mut u64) -> Result<()> {
     Ok(())
 }
 
-fn archive_header(bytes: &[u8]) -> Result<(usize, &[u8], Vec<Option<MsgNormalization>>)> {
+type ArchiveHeader<'a> = (usize, &'a [u8], Vec<Option<MsgNormalization>>);
+
+fn archive_header(bytes: &[u8]) -> Result<ArchiveHeader<'_>> {
     ensure!(
         bytes.len() >= (PREFIX_LENGTH + FOOTER_LENGTH) as usize,
         "MSG file is truncated"

@@ -1,9 +1,9 @@
-# multires_rs
+# multires
 
-`multires_rs` is an implementation of multiresolution sparse grids
+`multires` is an implementation of multiresolution sparse grids
 (MSG (I was hungry when I wrote this)), including the
 `.msg` archive format, and algorithms that operate on MSG data. Source-format importers such as
-`msg_amrex` and `msg_vti` depend on this crate; `msg_convert` provides their
+`msg_amrex` and `msg_vti` depend on this crate; `msg_tools` provides their
 shared command-line conversion interface.
 
 An MSG file currently contains one timestep. Levels are ordered coarse to fine,
@@ -14,7 +14,7 @@ value, you must do so explicitly.
 A field whose values have been normalized to `[0, 1]` may retain its original
 physical bounds as `MsgNormalization { min, max }`. The metadata is available
 from owned `MsgField` values and zero-copy archive field views, survives
-transcoding, and is shown by the `msg-probe` tool in the sibling `msg_convert`
+transcoding, and is shown by the `msg-probe` tool in the sibling `msg_tools`
 package. Normalization is an explicit data
 transformation performed by an importer such as `msg-convert`; archive codecs
 do not normalize logical values implicitly. Archives written before this
@@ -38,7 +38,7 @@ grid's bounds and precision must match its level and field declaration.
 
 ```rust
 use glam::{DMat4, DVec3, IVec3, UVec3};
-use multires_rs::{
+use multires::{
     MsgDataset, MsgField, MsgFieldLevel, MsgGeometry, MsgLevel, MsgScalarGrid,
     MsgScalarType, MsgWriteOptions, write_msg,
 };
@@ -99,7 +99,7 @@ scalar fields become an owned, mutable `MsgDataset`.
 
 ```rust
 use glam::UVec3;
-use multires_rs::{MappedMsgArchive, MsgChunkBuffer};
+use multires::{MappedMsgArchive, MsgChunkBuffer};
 
 fn main() -> anyhow::Result<()> {
     let mapped = MappedMsgArchive::open("example.msg")?;
@@ -201,7 +201,7 @@ closed.
 
 ## Tools
 
-- `msg-probe` (in the sibling `msg_convert` package): inspect metadata, decoded
+- `msg-probe` (in the sibling `msg_tools` package): inspect metadata, decoded
   ranges, codec statistics, and archive storage.
 - `msg-transcode`: rewrite fields with different codec policies.
 - `msg-isosurface`: extract an MC33 surface into Wavefront OBJ.

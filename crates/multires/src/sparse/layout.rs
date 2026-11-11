@@ -236,7 +236,7 @@ pub(super) fn scaled_voxel_aabb_in_fine_grid(
         let max = (i128::from(pos) + 1) * scale + i128::from(translation);
         let clipped_min = min.max(0);
         let clipped_max = max.min(i128::from(bound));
-        (clipped_min < clipped_max).then(|| (clipped_min as u32, clipped_max as u32))
+        (clipped_min < clipped_max).then_some((clipped_min as u32, clipped_max as u32))
     }
 
     let (min_x, max_x) = transformed_axis(coarse_pos.x, scale.x, translation.x, fine_bounds.x)?;

@@ -125,7 +125,7 @@ fn mesh_levels(
     let mut timings = Vec::with_capacity(levels.len());
     for level in &levels {
         let start = Instant::now();
-        let level_mesh = mesh_level_parallel(level, &ranges, options.surface.value)
+        let level_mesh = mesh_level_parallel(level, ranges, options.surface.value)
             .with_context(|| format!("extracting MSG level {}", level.level_index))?;
         let mesh_generation_time = start.elapsed();
         let start = Instant::now();

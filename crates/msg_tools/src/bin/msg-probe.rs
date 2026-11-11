@@ -3,7 +3,7 @@ use std::{fs, path::PathBuf};
 use anyhow::{Context, Result};
 use clap::Parser;
 use glam::{DVec3, IVec3, UVec3};
-use multires_rs::{
+use multires::{
     MSG_FORMAT_VERSION, MappedMsgArchive, MsgArchiveCodecStats, MsgArchiveFieldLevelStorage,
     MsgArchiveLevelInfo, MsgChunkCodec, MsgGeometry, MsgNormalization, MsgScalarType,
 };
@@ -262,7 +262,7 @@ fn print_storage(storage: MsgArchiveFieldLevelStorage) {
 
 fn dense_scalar_payload_size(
     levels: &[MsgArchiveLevelInfo],
-    fields: &[multires_rs::MsgArchiveFieldInfo<'_>],
+    fields: &[multires::MsgArchiveFieldInfo<'_>],
 ) -> Result<u128> {
     fields.iter().try_fold(0_u128, |total, field| {
         total

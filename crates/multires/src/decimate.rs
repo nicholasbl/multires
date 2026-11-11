@@ -516,7 +516,7 @@ fn decimate_mesh_grouped(
     let stage_start = Instant::now();
     mesh.indices = Vec::with_capacity(intermediate_face_count);
     for group in group_results {
-        for triangle in group.indices.chunks_exact(3) {
+        for triangle in group.indices.as_chunks::<3>().0 {
             mesh.indices.push([triangle[0], triangle[1], triangle[2]]);
         }
     }
@@ -724,7 +724,7 @@ fn meshlet_faces(meshlets: &meshopt::Meshlets) -> Vec<[u32; 3]> {
         .sum();
     let mut faces = Vec::with_capacity(face_count);
     for meshlet in meshlets.iter() {
-        for triangle in meshlet.triangles.chunks_exact(3) {
+        for triangle in meshlet.triangles.as_chunks::<3>().0 {
             faces.push([
                 meshlet.vertices[usize::from(triangle[0])],
                 meshlet.vertices[usize::from(triangle[1])],

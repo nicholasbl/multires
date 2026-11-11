@@ -537,7 +537,6 @@ where
     /// AABB outside `fine_mask` are clipped.
     ///
     /// Returns the number of destination voxels removed. A scale of zero is a no-op.
-
     pub fn mask_out_by_presence_scaled<M>(
         &mut self,
         fine_mask: &SparseGrid3<M>,

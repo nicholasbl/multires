@@ -1,7 +1,7 @@
 use std::{env, path::PathBuf};
 
 use anyhow::{Context, Result};
-use multires_rs::MappedMsgArchive;
+use multires::MappedMsgArchive;
 
 fn main() -> Result<()> {
     let path = env::args_os()

@@ -6,7 +6,7 @@ use std::{
 
 use anyhow::{Context, Result, bail, ensure};
 use clap::Parser;
-use multires_rs::{
+use multires::{
     MappedMsgArchive, MsgChunkCodec, MsgChunkCodecSelection, MsgErrorTolerance, MsgFieldCodec,
     MsgWriteOptions, transcode_msg,
 };
@@ -94,10 +94,7 @@ fn resolve(cli: Cli) -> Result<(PathBuf, PathBuf, Config)> {
     ))
 }
 
-fn codec_policies(
-    view: &multires_rs::MsgArchive<'_>,
-    config: &Config,
-) -> Result<Vec<MsgFieldCodec>> {
+fn codec_policies(view: &multires::MsgArchive<'_>, config: &Config) -> Result<Vec<MsgFieldCodec>> {
     let default = match (&config.codec, config.error) {
         (None, None) => None,
         (None, Some(_)) => bail!("a top-level error requires a top-level codec"),

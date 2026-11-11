@@ -1,7 +1,7 @@
 # msg_amrex
 
 `msg_amrex` is a library-only importer for converting AMReX plotfiles into the
-source-independent `multires_rs::MsgDataset` model.
+source-independent `multires::MsgDataset` model.
 
 ```rust
 use msg_amrex::{AmrexImportOptions, PlotFile, import_amrex};
@@ -17,5 +17,5 @@ are mapped and clamped into `[0, 1]` in `f64` before conversion to the requested
 logical scalar type, and the original physical bounds remain attached to the
 resulting MSG field.
 
-Use the sibling `msg_convert` command for TOML-driven AMReX or VTI conversion
+Use the sibling `msg_tools` package for TOML-driven AMReX or VTI conversion
 and MSG archive encoding.

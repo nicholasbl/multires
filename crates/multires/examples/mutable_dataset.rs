@@ -2,7 +2,7 @@ use std::{env, fs::File, path::PathBuf};
 
 use anyhow::{Context, Result};
 use glam::{DMat4, DVec3, IVec3, UVec3};
-use multires_rs::{
+use multires::{
     MsgDataset, MsgField, MsgFieldLevel, MsgGeometry, MsgLevel, MsgScalarGrid, MsgScalarType,
     MsgWriteOptions, write_msg,
 };

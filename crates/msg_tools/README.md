@@ -1,4 +1,4 @@
-# msg_convert
+# msg_tools
 
 `msg-convert` converts AMReX plotfiles and VTK XML ImageData (`.vti`) files
 into MSG archives. Formats are inferred from paths when possible.

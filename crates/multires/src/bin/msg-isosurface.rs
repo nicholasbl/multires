@@ -7,9 +7,7 @@ use std::{
 
 use anyhow::{Context, Result, ensure};
 use clap::Parser;
-use multires_rs::{
-    IsosurfaceOptions, MappedMsgArchive, Mesh3D, Sample, Surface, isosurface_archive,
-};
+use multires::{IsosurfaceOptions, MappedMsgArchive, Mesh3D, Sample, Surface, isosurface_archive};
 
 #[derive(Debug, Parser)]
 #[command(about = "Extract an MC33 isosurface from a point-based MSG field")]
@@ -39,7 +37,9 @@ fn main() -> Result<()> {
     );
     let sampled_quantities = args
         .sample_values
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .map(|values| {
             let min = values[1]
                 .parse::<f64>()

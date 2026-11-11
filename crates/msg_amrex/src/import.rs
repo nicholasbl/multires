@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail, ensure};
 use glam::{DMat4, DVec3, I64Vec3, UVec3};
-use multires_rs::{
+use multires::{
     MsgDataset, MsgField, MsgFieldLevel, MsgGeometry, MsgLevel, MsgNormalization, MsgScalarGrid,
     MsgScalarType, cell_center_to_point_geometry, sparse::Aabb3u,
 };
@@ -424,12 +424,8 @@ mod tests {
                 "cell-center conversion lost its half-cell offset"
             );
             let mut bytes = Vec::new();
-            multires_rs::write_msg(
-                &dataset,
-                &multires_rs::MsgWriteOptions::default(),
-                &mut bytes,
-            )?;
-            let decoded = multires_rs::read_msg(&bytes)?;
+            multires::write_msg(&dataset, &multires::MsgWriteOptions::default(), &mut bytes)?;
+            let decoded = multires::read_msg(&bytes)?;
             ensure!(
                 decoded
                     .field("density")
