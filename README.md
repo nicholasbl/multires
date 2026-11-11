@@ -14,7 +14,8 @@ value, you must do so explicitly.
 A field whose values have been normalized to `[0, 1]` may retain its original
 physical bounds as `MsgNormalization { min, max }`. The metadata is available
 from owned `MsgField` values and zero-copy archive field views, survives
-transcoding, and is shown by `msg-probe`. Normalization is an explicit data
+transcoding, and is shown by the `msg-probe` tool in the sibling `msg_convert`
+package. Normalization is an explicit data
 transformation performed by an importer such as `msg-convert`; archive codecs
 do not normalize logical values implicitly. Archives written before this
 metadata extension remain readable and report no normalization bounds.
@@ -200,7 +201,8 @@ closed.
 
 ## Tools
 
-- `msg-probe`: inspect metadata and compare archive size with a dense payload.
+- `msg-probe` (in the sibling `msg_convert` package): inspect metadata, decoded
+  ranges, codec statistics, and archive storage.
 - `msg-transcode`: rewrite fields with different codec policies.
 - `msg-isosurface`: extract an MC33 surface into Wavefront OBJ.
 
