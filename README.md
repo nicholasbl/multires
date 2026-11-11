@@ -12,5 +12,10 @@ println!("imported {} scalar samples", report.sample_count);
 # Ok::<(), anyhow::Error>(())
 ```
 
+Individual `AmrexField` requests may include `MsgNormalization` bounds. Values
+are mapped and clamped into `[0, 1]` in `f64` before conversion to the requested
+logical scalar type, and the original physical bounds remain attached to the
+resulting MSG field.
+
 Use the sibling `msg_convert` command for TOML-driven AMReX or VTI conversion
 and MSG archive encoding.

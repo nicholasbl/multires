@@ -5,17 +5,20 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail, ensure};
 use glam::{DMat4, DVec3, I64Vec3, UVec3};
 use multires_rs::{
-    MsgDataset, MsgField, MsgFieldLevel, MsgGeometry, MsgLevel, MsgScalarGrid, MsgScalarType,
-    cell_center_to_point_geometry, sparse::Aabb3u,
+    MsgDataset, MsgField, MsgFieldLevel, MsgGeometry, MsgLevel, MsgNormalization, MsgScalarGrid,
+    MsgScalarType, cell_center_to_point_geometry, sparse::Aabb3u,
 };
 
 use crate::{CoordinateSystem, DataReader, IndexDomain, PlotFile};
 
 /// One AMReX component requested for conversion to MSG.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AmrexField {
     pub component: usize,
     pub scalar_type: MsgScalarType,
+    /// Optional physical bounds mapped and clamped into `[0, 1]` in `f64`
+    /// before conversion to the requested scalar type.
+    pub normalization: Option<MsgNormalization>,
 }
 
 /// Handling of invalid or unrepresentable AMReX source values.
@@ -115,9 +118,9 @@ pub fn import_amrex(
                                         request.component
                                     )
                                 })?;
-                            decoded.push(sanitize_value(
+                            decoded.push(convert_value(
                                 source_value,
-                                request.scalar_type,
+                                *request,
                                 options.invalid_value_policy,
                                 &mut report.replaced_values[request_index],
                             )?);
@@ -131,12 +134,10 @@ pub fn import_amrex(
             }
             field_levels.push(MsgFieldLevel::new(values));
         }
+        let mut field = MsgField::new(variable.name.clone(), request.scalar_type, field_levels);
+        field.set_normalization(request.normalization);
         dataset
-            .add_field(MsgField::new(
-                variable.name.clone(),
-                request.scalar_type,
-                field_levels,
-            ))
+            .add_field(field)
             .with_context(|| format!("adding MSG field {:?}", variable.name))?;
     }
 
@@ -153,6 +154,7 @@ fn resolve_fields(plot_file: &PlotFile, options: &AmrexImportOptions) -> Result<
             .map(|component| AmrexField {
                 component,
                 scalar_type: MsgScalarType::F32,
+                normalization: None,
             })
             .collect::<Vec<_>>()
     } else {
@@ -171,6 +173,15 @@ fn resolve_fields(plot_file: &PlotFile, options: &AmrexImportOptions) -> Result<
             "AMReX component {} was requested more than once",
             request.component
         );
+        if let Some(normalization) = request.normalization {
+            ensure!(
+                normalization.min.is_finite()
+                    && normalization.max.is_finite()
+                    && normalization.min < normalization.max,
+                "AMReX component {} has invalid normalization bounds",
+                request.component
+            );
+        }
     }
     Ok(requests)
 }
@@ -231,23 +242,39 @@ fn derive_refinement_ratio(coarse: DVec3, fine: DVec3, level: usize) -> Result<U
     Ok(rounded.as_uvec3())
 }
 
-fn sanitize_value(
+fn convert_value(
     value: f64,
-    scalar_type: MsgScalarType,
+    request: AmrexField,
     policy: InvalidValuePolicy,
     replacement_count: &mut usize,
 ) -> Result<f64> {
-    let representable = value.is_finite()
-        && match scalar_type {
-            MsgScalarType::F32 => (value as f32).is_finite(),
-            MsgScalarType::F64 => true,
-        };
+    let value = if value.is_finite() {
+        value
+    } else {
+        match policy {
+            InvalidValuePolicy::Reject => bail!("source value {value} is non-finite"),
+            InvalidValuePolicy::ReplaceWithZero => {
+                *replacement_count += 1;
+                0.0
+            }
+        }
+    };
+    let value = request.normalization.map_or(value, |normalization| {
+        ((value - normalization.min) / (normalization.max - normalization.min)).clamp(0.0, 1.0)
+    });
+    let representable = match request.scalar_type {
+        MsgScalarType::F32 => (value as f32).is_finite(),
+        MsgScalarType::F64 => true,
+    };
     if representable {
         return Ok(value);
     }
     match policy {
         InvalidValuePolicy::Reject => {
-            bail!("source value {value} is non-finite or cannot be represented as {scalar_type:?}")
+            bail!(
+                "source value {value} cannot be represented as {:?}",
+                request.scalar_type
+            )
         }
         InvalidValuePolicy::ReplaceWithZero => {
             *replacement_count += 1;
@@ -331,19 +358,28 @@ mod tests {
     #[test]
     fn invalid_values_are_explicitly_rejected_or_replaced() {
         let mut replacements = 0;
+        let f64_request = AmrexField {
+            component: 0,
+            scalar_type: MsgScalarType::F64,
+            normalization: None,
+        };
+        let f32_request = AmrexField {
+            scalar_type: MsgScalarType::F32,
+            ..f64_request
+        };
         assert!(
-            sanitize_value(
+            convert_value(
                 f64::INFINITY,
-                MsgScalarType::F64,
+                f64_request,
                 InvalidValuePolicy::Reject,
                 &mut replacements
             )
             .is_err()
         );
         assert_eq!(
-            sanitize_value(
+            convert_value(
                 f64::NAN,
-                MsgScalarType::F32,
+                f32_request,
                 InvalidValuePolicy::ReplaceWithZero,
                 &mut replacements
             )
@@ -351,6 +387,26 @@ mod tests {
             0.0
         );
         assert_eq!(replacements, 1);
+    }
+
+    #[test]
+    fn normalizes_in_f64_before_f32_storage() {
+        let min = 1.0e20;
+        let max = 1.000000001e20;
+        let mut replacements = 0;
+        let normalized = convert_value(
+            min + (max - min) * 0.25,
+            AmrexField {
+                component: 0,
+                scalar_type: MsgScalarType::F32,
+                normalization: Some(MsgNormalization { min, max }),
+            },
+            InvalidValuePolicy::Reject,
+            &mut replacements,
+        )
+        .unwrap();
+        assert!((normalized - 0.25).abs() < 1.0e-12);
+        assert_eq!(replacements, 0);
     }
 
     #[test]
