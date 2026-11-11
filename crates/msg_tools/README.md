@@ -105,3 +105,14 @@ chunks:
 ```sh
 msg-probe --metadata-only simulation.msg
 ```
+
+## Archive processing
+
+`msg-transcode` rewrites an archive using new default or per-field codec
+policies. `msg-isosurface` extracts an MC33 surface from a mapped archive into
+Wavefront OBJ.
+
+```sh
+msg-transcode input.msg output.msg
+msg-isosurface simulation.msg density 0.5 density.obj
+```

@@ -203,8 +203,10 @@ closed.
 
 - `msg-probe` (in the sibling `msg_tools` package): inspect metadata, decoded
   ranges, codec statistics, and archive storage.
-- `msg-transcode`: rewrite fields with different codec policies.
-- `msg-isosurface`: extract an MC33 surface into Wavefront OBJ.
+- `msg-transcode` (in the sibling `msg_tools` package): rewrite fields with
+  different codec policies.
+- `msg-isosurface` (in the sibling `msg_tools` package): extract an MC33 surface
+  into Wavefront OBJ.
 
 The library additionally exposes point-based slice extraction, mesh relaxation,
 and parallel meshoptimizer-backed decimation. For the latter, a C++ compiler
