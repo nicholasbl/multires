@@ -40,6 +40,12 @@ pub enum MsgChunkCodec {
     AffineResidualU32,
 }
 
+impl MsgChunkCodec {
+    pub fn name(self) -> &'static str {
+        chunk_codec::codec_name(self)
+    }
+}
+
 /// How the writer chooses the codec for non-uniform chunks.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum MsgChunkCodecSelection {
@@ -135,6 +141,51 @@ pub struct MsgArchiveChunkRange {
     pub chunk_origin: UVec3,
     pub min: f64,
     pub max: f64,
+}
+
+/// On-disk block sizes for one archived field level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MsgArchiveFieldLevelStorage {
+    pub scalar_directory_bytes: u64,
+    pub scalar_mask_bytes: u64,
+    pub scalar_payload_bytes: u64,
+    pub acceleration_directory_bytes: u64,
+    pub acceleration_mask_bytes: u64,
+}
+
+impl MsgArchiveFieldLevelStorage {
+    pub fn total_bytes(self) -> u64 {
+        self.scalar_directory_bytes
+            + self.scalar_mask_bytes
+            + self.scalar_payload_bytes
+            + self.acceleration_directory_bytes
+            + self.acceleration_mask_bytes
+    }
+}
+
+/// Aggregated statistics for one chunk codec within a field level.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MsgArchiveCodecStats {
+    pub codec: MsgChunkCodec,
+    pub codec_id: u32,
+    pub codec_version: u16,
+    pub chunk_count: usize,
+    pub metadata_bytes: u64,
+    pub payload_bytes: u64,
+    /// Maximum error in the stored logical domain. Multiply by a normalization
+    /// span to recover physical error for a normalized field.
+    pub max_abs_error: f64,
+}
+
+/// Decoded value and storage statistics for one archived field level.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MsgArchiveFieldLevelStats {
+    pub chunk_count: usize,
+    pub present_point_count: usize,
+    pub min: Option<f64>,
+    pub max: Option<f64>,
+    pub storage: MsgArchiveFieldLevelStorage,
+    pub codecs: Vec<MsgArchiveCodecStats>,
 }
 
 #[derive(Debug)]
@@ -400,6 +451,86 @@ impl<'a> MsgArchiveFieldLevel<'a> {
                 min: (range.value_min.to_native() - error).max(-f64::MAX),
                 max: (range.value_max.to_native() + error).min(f64::MAX),
             }
+        })
+    }
+
+    pub fn storage(&self) -> MsgArchiveFieldLevelStorage {
+        MsgArchiveFieldLevelStorage {
+            scalar_directory_bytes: self.field_level.data.stored_length.to_native(),
+            scalar_mask_bytes: self.field_level.data_masks.stored_length.to_native(),
+            scalar_payload_bytes: self.field_level.data_payloads.stored_length.to_native(),
+            acceleration_directory_bytes: self.field_level.active_cubes.stored_length.to_native(),
+            acceleration_mask_bytes: self.field_level.active_cube_masks.stored_length.to_native(),
+        }
+    }
+
+    /// Decode present samples and aggregate per-codec storage statistics.
+    pub fn statistics(&self) -> Result<MsgArchiveFieldLevelStats> {
+        let mut codecs: Vec<MsgArchiveCodecStats> = Vec::new();
+        for chunk in self.scalar.chunks.iter() {
+            let codec_id = chunk.codec_id.to_native();
+            let codec_version = chunk.codec_version.to_native();
+            let codec = chunk_codec::codec_from_id(codec_id)
+                .with_context(|| format!("unknown MSG chunk codec id {codec_id}"))?;
+            let slot = codecs
+                .iter()
+                .position(|stats| {
+                    stats.codec_id == codec_id && stats.codec_version == codec_version
+                })
+                .unwrap_or_else(|| {
+                    codecs.push(MsgArchiveCodecStats {
+                        codec,
+                        codec_id,
+                        codec_version,
+                        chunk_count: 0,
+                        metadata_bytes: 0,
+                        payload_bytes: 0,
+                        max_abs_error: 0.0,
+                    });
+                    codecs.len() - 1
+                });
+            let stats = &mut codecs[slot];
+            stats.chunk_count += 1;
+            stats.metadata_bytes = stats
+                .metadata_bytes
+                .checked_add(u64::try_from(chunk.metadata.len())?)
+                .context("codec metadata byte count overflow")?;
+            stats.payload_bytes = stats
+                .payload_bytes
+                .checked_add(chunk.payload_length.to_native())
+                .context("codec payload byte count overflow")?;
+            stats.max_abs_error = stats.max_abs_error.max(chunk.max_abs_error.to_native());
+        }
+        codecs.sort_by_key(|stats| (stats.codec_id, stats.codec_version));
+
+        let mut buffer = MsgChunkBuffer::new(self.scalar_type);
+        let mut present_point_count = 0_usize;
+        let mut min = f64::INFINITY;
+        let mut max = f64::NEG_INFINITY;
+        for key in self.chunk_keys() {
+            ensure!(self.fill_chunk(key, &mut buffer)?, "MSG chunk disappeared");
+            let extent = buffer.extent();
+            for z in 0..extent.z {
+                for y in 0..extent.y {
+                    for x in 0..extent.x {
+                        if let Some(value) = buffer.get_local(UVec3::new(x, y, z)) {
+                            present_point_count = present_point_count
+                                .checked_add(1)
+                                .context("present point count overflow")?;
+                            min = min.min(value);
+                            max = max.max(value);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(MsgArchiveFieldLevelStats {
+            chunk_count: self.scalar.chunks.len(),
+            present_point_count,
+            min: (present_point_count != 0).then_some(min),
+            max: (present_point_count != 0).then_some(max),
+            storage: self.storage(),
+            codecs,
         })
     }
 
@@ -1339,6 +1470,15 @@ mod tests {
                 max: 45.0
             })
         );
+        let stats = view.field("density").unwrap().level(0)?.statistics()?;
+        assert_eq!(stats.chunk_count, 1);
+        assert_eq!(stats.present_point_count, 1);
+        assert_eq!(stats.min, Some(0.45));
+        assert_eq!(stats.max, Some(0.45));
+        assert_eq!(stats.codecs.len(), 1);
+        assert_eq!(stats.codecs[0].codec, MsgChunkCodec::UniformF64);
+        assert_eq!(stats.codecs[0].chunk_count, 1);
+        assert!(stats.storage.total_bytes() > 0);
         let decoded = view.decode_fields(&["density"])?;
         assert_eq!(
             decoded.fields()[0].normalization(),

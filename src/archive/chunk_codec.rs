@@ -504,6 +504,22 @@ pub(super) fn codec_name(codec: MsgChunkCodec) -> &'static str {
     }
 }
 
+pub(super) fn codec_from_id(codec_id: u32) -> Option<MsgChunkCodec> {
+    Some(match codec_id {
+        CODEC_UNIFORM => MsgChunkCodec::UniformF64,
+        CODEC_DENSE_F32 => MsgChunkCodec::DenseF32,
+        CODEC_DENSE_F64 => MsgChunkCodec::DenseF64,
+        CODEC_QUANTIZED_U8 => MsgChunkCodec::QuantizedU8,
+        CODEC_QUANTIZED_U16 => MsgChunkCodec::QuantizedU16,
+        CODEC_QUANTIZED_U32 => MsgChunkCodec::QuantizedU32,
+        CODEC_AFFINE_F64 => MsgChunkCodec::AffineF64,
+        CODEC_AFFINE_RESIDUAL_U8 => MsgChunkCodec::AffineResidualU8,
+        CODEC_AFFINE_RESIDUAL_U16 => MsgChunkCodec::AffineResidualU16,
+        CODEC_AFFINE_RESIDUAL_U32 => MsgChunkCodec::AffineResidualU32,
+        _ => return None,
+    })
+}
+
 fn dense_f32_candidate<T: Scalar>(
     values: &[T],
     mask: &[u64; MASK_WORDS],

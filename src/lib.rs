@@ -18,9 +18,10 @@ pub mod sparse;
 
 pub use archive::{
     MSG_FORMAT_MAGIC, MSG_FORMAT_VERSION, MappedMsgArchive, MsgArchive, MsgArchiveChunkRange,
-    MsgArchiveField, MsgArchiveFieldInfo, MsgArchiveFieldLevel, MsgArchiveLevelInfo,
-    MsgChunkBuffer, MsgChunkCodec, MsgChunkCodecSelection, MsgErrorTolerance, MsgFieldCodec,
-    MsgWriteOptions, read_msg, read_msg_fields, transcode_msg, view_msg, write_msg,
+    MsgArchiveCodecStats, MsgArchiveField, MsgArchiveFieldInfo, MsgArchiveFieldLevel,
+    MsgArchiveFieldLevelStats, MsgArchiveFieldLevelStorage, MsgArchiveLevelInfo, MsgChunkBuffer,
+    MsgChunkCodec, MsgChunkCodecSelection, MsgErrorTolerance, MsgFieldCodec, MsgWriteOptions,
+    read_msg, read_msg_fields, transcode_msg, view_msg, write_msg,
 };
 pub use dataset::{
     ChunkValueRange, MsgDataset, MsgField, MsgFieldAcceleration, MsgFieldLevel, MsgLevel,
