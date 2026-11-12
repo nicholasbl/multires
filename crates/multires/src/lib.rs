@@ -40,4 +40,4 @@ pub use isosurface::{
 pub use mesh::{Mesh3D, RemoveDegenerateTrianglesOptions, remove_degenerate_triangles};
 pub use relax::{VertexRelaxOptions, VertexRelaxResult, VertexRelaxTimings, relax_mesh_vertices};
 pub use scalar::{MsgScalarGrid, MsgScalarType};
-pub use slice::{SliceAxis, SliceOptions, SlicePlane, slice};
+pub use slice::{SliceAxis, SliceOptions, SlicePlane, slice, slice_archive};

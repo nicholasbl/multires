@@ -44,10 +44,6 @@ impl ActiveCubes<'_> {
         }
     }
 
-    pub(crate) fn bounds_aabb(&self) -> Aabb3u {
-        Aabb3u::full_grid(self.bounds())
-    }
-
     pub(crate) fn for_each_present_in_aabb(&self, aabb: Aabb3u, mut visit: impl FnMut(UVec3)) {
         match self {
             Self::Owned(grid) => {
@@ -183,7 +179,7 @@ pub(crate) fn archive_point_grid_levels<'a>(
     surface_field: &str,
     sampled_fields: &[&str],
     level_range: Option<&RangeInclusive<usize>>,
-    isovalue: f64,
+    isovalue: Option<f64>,
 ) -> Result<Vec<PointGridLevel<'a>>> {
     ensure!(
         sampled_fields.len() <= 2,
@@ -207,8 +203,14 @@ pub(crate) fn archive_point_grid_levels<'a>(
         if level_range.is_some_and(|range| !range.contains(&index)) {
             continue;
         }
-        let Some(surface_level) = surface.level_if_value_may_be_present(index, isovalue)? else {
-            continue;
+        let surface_level = match isovalue {
+            Some(isovalue) => {
+                let Some(level) = surface.level_if_value_may_be_present(index, isovalue)? else {
+                    continue;
+                };
+                level
+            }
+            None => surface.level(index)?,
         };
         let value_ranges = surface_level
             .value_ranges()

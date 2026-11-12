@@ -91,7 +91,7 @@ pub fn isosurface_archive(
         &options.surface.field,
         &sampled_names,
         options.levels.as_ref(),
-        options.surface.value,
+        Some(options.surface.value),
     )?;
     mesh_levels(levels, &options, &ranges, start.elapsed())
 }

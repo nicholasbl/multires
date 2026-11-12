@@ -6,10 +6,11 @@ use anyhow::{Context, Result, ensure};
 use glam::{DVec3, UVec3};
 
 use crate::{
-    Mesh3D, MsgDataset,
+    Mesh3D, MsgArchive, MsgDataset,
     isosurface::Sample,
-    point_grid::{PointGridLevel, point_grid_levels},
+    point_grid::{PointGridLevel, archive_point_grid_levels, point_grid_levels},
     scalar::MsgScalarAccessor,
+    sparse::Aabb3u,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,33 +48,64 @@ struct SampleRange {
 /// Extract a grid-frame axis-aligned plane and transform it into world space.
 pub fn slice(dataset: &MsgDataset, options: SliceOptions) -> Result<Mesh3D> {
     validate_options(dataset, &options)?;
-    let sampled_names = options
-        .sampled_quantities
-        .iter()
-        .map(|sample| sample.field.as_str())
-        .collect::<Vec<_>>();
-    let ranges = options
-        .sampled_quantities
-        .iter()
-        .map(|sample| SampleRange {
-            min: *sample.range.start(),
-            max: *sample.range.end(),
-        })
-        .collect::<Vec<_>>();
+    let sampled_names = sampled_names(&options);
+    let ranges = sample_ranges(&options);
     let levels = point_grid_levels(
         dataset,
         &options.topology_field,
         &sampled_names,
         options.levels.as_ref(),
     )?;
+    mesh_levels(levels, &options, &ranges)
+}
 
+/// Extract a grid-frame axis-aligned plane directly from an archive without
+/// materializing a [`MsgDataset`]. Scalar values are reconstructed on demand.
+pub fn slice_archive(archive: &MsgArchive<'_>, options: SliceOptions) -> Result<Mesh3D> {
+    validate_archive_options(archive, &options)?;
+    let sampled_names = sampled_names(&options);
+    let ranges = sample_ranges(&options);
+    let levels = archive_point_grid_levels(
+        archive,
+        &options.topology_field,
+        &sampled_names,
+        options.levels.as_ref(),
+        None,
+    )?;
+    mesh_levels(levels, &options, &ranges)
+}
+
+fn sampled_names(options: &SliceOptions) -> Vec<&str> {
+    options
+        .sampled_quantities
+        .iter()
+        .map(|sample| sample.field.as_str())
+        .collect()
+}
+
+fn sample_ranges(options: &SliceOptions) -> Vec<SampleRange> {
+    options
+        .sampled_quantities
+        .iter()
+        .map(|sample| SampleRange {
+            min: *sample.range.start(),
+            max: *sample.range.end(),
+        })
+        .collect()
+}
+
+fn mesh_levels(
+    levels: Vec<PointGridLevel<'_>>,
+    options: &SliceOptions,
+    ranges: &[SampleRange],
+) -> Result<Mesh3D> {
     let mut mesh = Mesh3D::default();
     for level in &levels {
         let Some(axis_coordinate) = local_axis_coordinate(level, options.plane)? else {
             continue;
         };
         let start = mesh.indices.len();
-        let level_mesh = mesh_level(level, options.plane.axis, axis_coordinate, &ranges)
+        let level_mesh = mesh_level(level, options.plane.axis, axis_coordinate, ranges)
             .with_context(|| format!("extracting slice at level {}", level.level_index))?;
         merge_mesh(&mut mesh, level_mesh)?;
         if options.flip_winding {
@@ -83,6 +115,46 @@ pub fn slice(dataset: &MsgDataset, options: SliceOptions) -> Result<Mesh3D> {
         }
     }
     Ok(mesh)
+}
+
+fn validate_archive_options(archive: &MsgArchive<'_>, options: &SliceOptions) -> Result<()> {
+    ensure!(
+        options.plane.coordinate.is_finite(),
+        "slice coordinate must be finite"
+    );
+    ensure!(
+        archive.field(&options.topology_field).is_some(),
+        "topology field {:?} is absent",
+        options.topology_field
+    );
+    ensure!(
+        !options.sampled_quantities.is_empty(),
+        "slice requires at least one sampled field"
+    );
+    ensure!(
+        options.sampled_quantities.len() <= 2,
+        "slice supports at most two sampled fields"
+    );
+    for sample in &options.sampled_quantities {
+        ensure!(
+            archive.field(&sample.field).is_some(),
+            "sampled field {:?} is absent",
+            sample.field
+        );
+        let (min, max) = (*sample.range.start(), *sample.range.end());
+        ensure!(
+            min.is_finite() && max.is_finite() && max > min,
+            "invalid sampled field range"
+        );
+    }
+    if let Some(levels) = &options.levels {
+        ensure!(levels.start() <= levels.end(), "level range is reversed");
+        ensure!(
+            *levels.end() < archive.level_count(),
+            "level range exceeds archive"
+        );
+    }
+    Ok(())
 }
 
 fn validate_options(dataset: &MsgDataset, options: &SliceOptions) -> Result<()> {
@@ -159,10 +231,22 @@ fn mesh_level(
         .map(|field| field.accessor())
         .collect::<Vec<_>>();
     let mut error = None;
+    let cube_bounds = level.active_cubes.bounds();
+    if anchor_axis >= component(cube_bounds, axis_index(axis)) {
+        return Ok(mesh);
+    }
+    let mut slab_min = UVec3::ZERO;
+    let mut slab_max = cube_bounds;
+    set_component(&mut slab_min, axis_index(axis), anchor_axis);
+    set_component(
+        &mut slab_max,
+        axis_index(axis),
+        anchor_axis.saturating_add(1),
+    );
     level
         .active_cubes
-        .for_each_present_in_aabb(level.active_cubes.bounds_aabb(), |anchor| {
-            if error.is_none() && component(anchor, axis_index(axis)) == anchor_axis {
+        .for_each_present_in_aabb(Aabb3u::new(slab_min, slab_max), |anchor| {
+            if error.is_none() {
                 error = emit_quad(
                     &mut mesh,
                     &mut vertex_ids,
@@ -283,6 +367,14 @@ fn axis_index(axis: SliceAxis) -> usize {
 fn component(value: UVec3, axis: usize) -> u32 {
     value.to_array()[axis]
 }
+fn set_component(value: &mut UVec3, axis: usize, component: u32) {
+    match axis {
+        0 => value.x = component,
+        1 => value.y = component,
+        2 => value.z = component,
+        _ => unreachable!("slice axis index is valid"),
+    }
+}
 fn component_i(value: glam::IVec3, axis: usize) -> i32 {
     value.to_array()[axis]
 }
@@ -295,7 +387,10 @@ mod tests {
     use glam::{DMat4, IVec3};
 
     use super::*;
-    use crate::{MsgField, MsgFieldLevel, MsgGeometry, MsgLevel, MsgScalarGrid, MsgScalarType};
+    use crate::{
+        MsgField, MsgFieldLevel, MsgGeometry, MsgLevel, MsgScalarGrid, MsgScalarType,
+        MsgWriteOptions, view_msg, write_msg,
+    };
 
     #[test]
     fn grid_frame_slice_is_transformed_to_world() -> Result<()> {
@@ -322,13 +417,69 @@ mod tests {
             MsgScalarType::F32,
             vec![MsgFieldLevel::new(values)],
         ))?;
+        let options = SliceOptions {
+            topology_field: "density".into(),
+            plane: SlicePlane {
+                axis: SliceAxis::X,
+                coordinate: 0.5,
+            },
+            sampled_quantities: vec![Sample {
+                field: "density".into(),
+                range: 0.0..=1.0,
+            }],
+            levels: None,
+            flip_winding: false,
+        };
+        let mesh = slice(&dataset, options.clone())?;
+        assert_eq!(mesh.indices.len(), 2);
+        assert!(
+            mesh.positions
+                .iter()
+                .all(|position| (position[0] - 10.5).abs() <= f32::EPSILON)
+        );
+        assert!(mesh.uv.iter().all(|uv| (uv[0] - 0.5).abs() <= f32::EPSILON));
+
+        let mut bytes = Vec::new();
+        write_msg(&dataset, &MsgWriteOptions::default(), &mut bytes)?;
+        let archive = view_msg(&bytes)?;
+        let archive_mesh = slice_archive(&archive, options)?;
+        assert_eq!(archive_mesh.positions, mesh.positions);
+        assert_eq!(archive_mesh.uv, mesh.uv);
+        assert_eq!(archive_mesh.indices, mesh.indices);
+        Ok(())
+    }
+
+    #[test]
+    fn slice_at_point_boundary_uses_the_adjacent_cube_slab() -> Result<()> {
+        let mut dataset = MsgDataset::new(
+            0.0,
+            MsgGeometry::point_centered(DMat4::IDENTITY)?,
+            vec![MsgLevel {
+                index_origin: IVec3::ZERO,
+                point_extent: UVec3::splat(3),
+                scale: DVec3::ONE,
+                refinement_ratio_from_coarse: None,
+            }],
+        )?;
+        let mut values = MsgScalarGrid::new(UVec3::splat(3), MsgScalarType::F32);
+        assert!(
+            values
+                .write_f32_values(Aabb3u::new(UVec3::ZERO, UVec3::splat(3)), &[1.0; 27])
+                .is_ok()
+        );
+        dataset.add_field(MsgField::new(
+            "density",
+            MsgScalarType::F32,
+            vec![MsgFieldLevel::new(values)],
+        ))?;
+
         let mesh = slice(
             &dataset,
             SliceOptions {
                 topology_field: "density".into(),
                 plane: SlicePlane {
                     axis: SliceAxis::X,
-                    coordinate: 0.5,
+                    coordinate: 1.0,
                 },
                 sampled_quantities: vec![Sample {
                     field: "density".into(),
@@ -338,13 +489,12 @@ mod tests {
                 flip_winding: false,
             },
         )?;
-        assert_eq!(mesh.indices.len(), 2);
+        assert_eq!(mesh.indices.len(), 8);
         assert!(
             mesh.positions
                 .iter()
-                .all(|position| (position[0] - 10.5).abs() <= f32::EPSILON)
+                .all(|position| (position[0] - 1.0).abs() <= f32::EPSILON)
         );
-        assert!(mesh.uv.iter().all(|uv| (uv[0] - 0.5).abs() <= f32::EPSILON));
         Ok(())
     }
 }
