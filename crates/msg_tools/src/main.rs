@@ -1,3 +1,7 @@
+pub(crate) mod amrex;
+pub(crate) mod image_stack;
+pub(crate) mod schema;
+
 use std::{
     fs::{self, File},
     io::{BufWriter, Write},
@@ -5,22 +9,25 @@ use std::{
     time::Instant,
 };
 
+use clap::Parser;
+
 use anyhow::{Context, Result, bail, ensure};
-use clap::{Parser, ValueEnum};
+
 use msg_amrex::{AmrexField, AmrexImportOptions, InvalidValuePolicy, PlotFile, import_amrex};
 use msg_vti::{VtiImportOptions, import_vti};
 use multires::{
     MsgChunkCodec, MsgChunkCodecSelection, MsgDataset, MsgErrorTolerance, MsgFieldCodec,
-    MsgNormalization, MsgScalarType, MsgWriteOptions, write_msg,
+    MsgNormalization, MsgWriteOptions, write_msg,
 };
-use serde::Deserialize;
+
+use schema::*;
 
 fn main() -> Result<()> {
     let resolved = Resolved::resolve(Cli::parse())?;
     reject_same_file(&resolved.input, &resolved.output)?;
 
     let (mut dataset, import_description) = match resolved.input_format {
-        InputFormat::Amrex => import_from_amrex(&resolved)?,
+        InputFormat::Amrex => amrex::import_from_amrex(&resolved)?,
         InputFormat::Vti => import_from_vti(&resolved)?,
     };
     normalize_fields(&mut dataset, &resolved.config)?;
@@ -45,173 +52,6 @@ fn main() -> Result<()> {
         flush_time.as_secs_f64()
     );
     Ok(())
-}
-
-#[derive(Debug, Parser)]
-#[command(
-    name = "msg-convert",
-    about = "Convert supported scientific data formats into MSG archives",
-    after_help = "Formats are inferred from the input and output paths when possible. With --config, positional paths may override both configured paths as a pair."
-)]
-struct Cli {
-    #[arg(long, value_name = "FILE")]
-    config: Option<PathBuf>,
-    #[arg(long, value_enum)]
-    input_format: Option<InputFormat>,
-    #[arg(long, value_enum)]
-    output_format: Option<OutputFormat>,
-    /// Select an input field or array. Repeat to select more than one.
-    #[arg(short, long, value_name = "NAME", action = clap::ArgAction::Append, conflicts_with = "config")]
-    field: Vec<String>,
-    /// Replace invalid AMReX values with zero.
-    #[arg(long, conflicts_with = "config")]
-    amrex_replace_invalid: bool,
-    input: Option<PathBuf>,
-    output: Option<PathBuf>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum InputFormat {
-    Amrex,
-    Vti,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum OutputFormat {
-    Msg,
-}
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-struct Config {
-    input: InputConfig,
-    output: OutputConfig,
-    source: SourceConfig,
-    encoding: EncodingConfig,
-}
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-struct InputConfig {
-    path: Option<PathBuf>,
-    format: Option<InputFormat>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-struct OutputConfig {
-    path: Option<PathBuf>,
-    format: Option<OutputFormat>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-struct SourceConfig {
-    fields: Vec<SourceFieldSelection>,
-    amrex: Option<AmrexSourceConfig>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-enum SourceFieldSelection {
-    Name(String),
-    Detailed(SourceFieldConfig),
-}
-
-impl SourceFieldSelection {
-    fn name(&self) -> &str {
-        match self {
-            Self::Name(name) => name,
-            Self::Detailed(field) => &field.name,
-        }
-    }
-
-    fn precision(&self) -> ConfigScalarType {
-        match self {
-            Self::Name(_) => ConfigScalarType::F32,
-            Self::Detailed(field) => field.precision.unwrap_or(ConfigScalarType::F32),
-        }
-    }
-
-    fn has_precision(&self) -> bool {
-        matches!(self, Self::Detailed(field) if field.precision.is_some())
-    }
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SourceFieldConfig {
-    name: String,
-    precision: Option<ConfigScalarType>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-struct AmrexSourceConfig {
-    invalid_values: InvalidValueConfig,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-enum InvalidValueConfig {
-    #[default]
-    Reject,
-    Zero,
-}
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-struct EncodingConfig {
-    defaults: EncodingDefaultsConfig,
-    fields: Vec<EncodingFieldConfig>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-struct EncodingDefaultsConfig {
-    codec: Option<String>,
-    error: Option<ErrorConfig>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct EncodingFieldConfig {
-    name: String,
-    codec: Option<String>,
-    error: Option<ErrorConfig>,
-    normalize: Option<NormalizationConfig>,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct NormalizationConfig {
-    min: f64,
-    max: f64,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ErrorConfig {
-    absolute: Option<f64>,
-    relative_percent: Option<f64>,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum ConfigScalarType {
-    F32,
-    F64,
-}
-
-impl From<ConfigScalarType> for MsgScalarType {
-    fn from(value: ConfigScalarType) -> Self {
-        match value {
-            ConfigScalarType::F32 => Self::F32,
-            ConfigScalarType::F64 => Self::F64,
-        }
-    }
 }
 
 struct Resolved {
@@ -371,79 +211,6 @@ fn validate_config_for_format(config: &Config, format: InputFormat) -> Result<()
         }
     }
     Ok(())
-}
-
-fn import_from_amrex(resolved: &Resolved) -> Result<(MsgDataset, String)> {
-    let plotfile = PlotFile::open(&resolved.input)
-        .with_context(|| format!("opening AMReX plotfile {}", resolved.input.display()))?;
-    let configured = resolved
-        .config
-        .source
-        .fields
-        .iter()
-        .map(|field| (field.name(), field.precision()))
-        .collect::<Vec<_>>();
-    let requested = if resolved.cli_fields.is_empty() {
-        configured
-    } else {
-        resolved
-            .cli_fields
-            .iter()
-            .map(|name| (name.as_str(), ConfigScalarType::F32))
-            .collect()
-    };
-    let mut fields = Vec::with_capacity(requested.len());
-    for (index, (name, scalar_type)) in requested.iter().enumerate() {
-        ensure!(
-            !requested[..index]
-                .iter()
-                .any(|(earlier, _)| earlier == name),
-            "AMReX variable {name:?} was requested more than once"
-        );
-        let variable = plotfile
-            .variable(name)
-            .with_context(|| format!("AMReX variable {name:?} was not found"))?;
-        fields.push(AmrexField {
-            component: variable.index,
-            scalar_type: (*scalar_type).into(),
-            normalization: configured_normalization(&resolved.config, name)?,
-        });
-    }
-    let replace_invalid = resolved.cli_replace_invalid
-        || resolved
-            .config
-            .source
-            .amrex
-            .as_ref()
-            .is_some_and(|config| config.invalid_values == InvalidValueConfig::Zero);
-    let (dataset, report) = import_amrex(
-        &plotfile,
-        &AmrexImportOptions {
-            fields,
-            invalid_value_policy: if replace_invalid {
-                InvalidValuePolicy::ReplaceWithZero
-            } else {
-                InvalidValuePolicy::Reject
-            },
-        },
-    )?;
-    for (field, replacements) in dataset.fields().iter().zip(&report.replaced_values) {
-        if *replacements != 0 {
-            eprintln!(
-                "warning: replaced {replacements} invalid values with zero in {:?}",
-                field.name()
-            );
-        }
-    }
-    Ok((
-        dataset,
-        format!(
-            "AMReX import: {:.6}s, patches {}, samples {}",
-            report.elapsed.as_secs_f64(),
-            report.patch_count,
-            report.sample_count
-        ),
-    ))
 }
 
 fn import_from_vti(resolved: &Resolved) -> Result<(MsgDataset, String)> {
