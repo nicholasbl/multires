@@ -31,9 +31,10 @@ pub(crate) struct Cli {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "kebab-case")]
 pub(crate) enum InputFormat {
     Amrex,
+    ImageStack,
     Vti,
 }
 
@@ -71,6 +72,26 @@ pub(crate) struct OutputConfig {
 pub(crate) struct SourceConfig {
     pub(crate) fields: Vec<SourceFieldSelection>,
     pub(crate) amrex: Option<AmrexSourceConfig>,
+    #[serde(rename = "image-stack")]
+    pub(crate) image_stack: Option<ImageStackSourceConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct ImageStackSourceConfig {
+    pub(crate) field: String,
+    pub(crate) spacing: [f64; 3],
+    pub(crate) discard: Vec<u16>,
+}
+
+impl Default for ImageStackSourceConfig {
+    fn default() -> Self {
+        Self {
+            field: "labels".to_owned(),
+            spacing: [1.0; 3],
+            discard: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]

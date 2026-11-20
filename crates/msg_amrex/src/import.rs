@@ -70,6 +70,12 @@ pub fn import_amrex(
     );
 
     let requests = resolve_fields(plot_file, options)?;
+    ensure!(
+        requests
+            .iter()
+            .all(|request| request.scalar_type.is_continuous()),
+        "AMReX fields must use f32 or f64 continuous storage"
+    );
     let levels = build_levels(plot_file)?;
     let geometry = build_geometry(plot_file, &levels)?;
     let mut dataset = MsgDataset::new(plot_file.header().simulation_time, geometry, levels)
@@ -263,6 +269,7 @@ fn convert_value(
         ((value - normalization.min) / (normalization.max - normalization.min)).clamp(0.0, 1.0)
     });
     let representable = match request.scalar_type {
+        MsgScalarType::LabelU8 | MsgScalarType::LabelU16 => false,
         MsgScalarType::F32 => (value as f32).is_finite(),
         MsgScalarType::F64 => true,
     };

@@ -9,9 +9,19 @@ use crate::{
 
 pub(crate) fn build_active_cubes(samples: &MsgScalarGrid) -> SparseGrid3<()> {
     match samples {
+        MsgScalarGrid::LabelU8(grid) => empty_active_cubes(grid.bounds()),
+        MsgScalarGrid::LabelU16(grid) => empty_active_cubes(grid.bounds()),
         MsgScalarGrid::F32(grid) => build_active_cubes_for_grid(grid),
         MsgScalarGrid::F64(grid) => build_active_cubes_for_grid(grid),
     }
+}
+
+fn empty_active_cubes(sample_bounds: UVec3) -> SparseGrid3<()> {
+    SparseGrid3::new(UVec3::new(
+        sample_bounds.x.saturating_sub(1),
+        sample_bounds.y.saturating_sub(1),
+        sample_bounds.z.saturating_sub(1),
+    ))
 }
 
 fn build_active_cubes_for_grid<T>(samples: &SparseGrid3<T>) -> SparseGrid3<()>

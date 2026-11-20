@@ -348,6 +348,20 @@ fn build_fixture(chunks_per_axis: u32, field_count: usize, codec: CodecCase) -> 
     for field_index in 0..field_count {
         let mut grid = MsgScalarGrid::new(extent, codec.scalar_type);
         match codec.scalar_type {
+            MsgScalarType::LabelU8 => {
+                let values = generated_values(point_count, extent, field_index)
+                    .map(|value| value as u8)
+                    .collect::<Vec<_>>();
+                grid.write_u8_values(Aabb3u::full_grid(extent), &values)
+                    .unwrap();
+            }
+            MsgScalarType::LabelU16 => {
+                let values = generated_values(point_count, extent, field_index)
+                    .map(|value| value as u16)
+                    .collect::<Vec<_>>();
+                grid.write_u16_values(Aabb3u::full_grid(extent), &values)
+                    .unwrap();
+            }
             MsgScalarType::F32 => {
                 let values = generated_values(point_count, extent, field_index)
                     .map(|value| value as f32)
@@ -386,6 +400,8 @@ fn build_fixture(chunks_per_axis: u32, field_count: usize, codec: CodecCase) -> 
     let mut bytes = Vec::new();
     write_msg(&dataset, &MsgWriteOptions { codecs }, &mut bytes).unwrap();
     let scalar_width = match codec.scalar_type {
+        MsgScalarType::LabelU8 => 1,
+        MsgScalarType::LabelU16 => 2,
         MsgScalarType::F32 => 4,
         MsgScalarType::F64 => 8,
     };

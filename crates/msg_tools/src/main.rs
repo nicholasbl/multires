@@ -28,6 +28,7 @@ fn main() -> Result<()> {
 
     let (mut dataset, import_description) = match resolved.input_format {
         InputFormat::Amrex => amrex::import_from_amrex(&resolved)?,
+        InputFormat::ImageStack => image_stack::import_from_image_stack(&resolved)?,
         InputFormat::Vti => import_from_vti(&resolved)?,
     };
     normalize_fields(&mut dataset, &resolved.config)?;
@@ -121,6 +122,12 @@ fn infer_input_format(path: &Path) -> Result<InputFormat> {
     if extension_is(path, "vti") {
         return Ok(InputFormat::Vti);
     }
+    if ["png", "tif", "tiff", "bmp"]
+        .iter()
+        .any(|extension| extension_is(path, extension))
+    {
+        return Ok(InputFormat::ImageStack);
+    }
     if path.is_dir() && path.join("Header").is_file() {
         return Ok(InputFormat::Amrex);
     }
@@ -148,11 +155,45 @@ fn extension_is(path: &Path, expected: &str) -> bool {
 }
 
 fn validate_config_for_format(config: &Config, format: InputFormat) -> Result<()> {
-    if format == InputFormat::Vti {
+    if format != InputFormat::Amrex {
         ensure!(
             config.source.amrex.is_none(),
-            "[source.amrex] options cannot be used with VTI input"
+            "[source.amrex] options require AMReX input"
         );
+    }
+    if format != InputFormat::ImageStack {
+        ensure!(
+            config.source.image_stack.is_none(),
+            "[source.image-stack] options require image-stack input"
+        );
+    }
+    if let Some(images) = &config.source.image_stack {
+        ensure!(
+            config.source.fields.is_empty(),
+            "[source].fields cannot be used with image-stack input"
+        );
+        ensure!(
+            images
+                .spacing
+                .iter()
+                .all(|value| value.is_finite() && *value > 0.0),
+            "image-stack spacing must be finite and positive"
+        );
+        ensure!(
+            !images.field.is_empty(),
+            "image-stack field name cannot be empty"
+        );
+        let unique = images
+            .discard
+            .iter()
+            .copied()
+            .collect::<std::collections::HashSet<_>>();
+        ensure!(
+            unique.len() == images.discard.len(),
+            "image-stack discard values contain duplicates"
+        );
+    }
+    if format == InputFormat::Vti {
         ensure!(
             config
                 .source
@@ -255,6 +296,10 @@ fn normalize_fields(dataset: &mut MsgDataset, config: &Config) -> Result<()> {
         let field = dataset
             .field_mut(name)
             .with_context(|| format!("MSG dataset has no output field {name:?}"))?;
+        ensure!(
+            field.scalar_type().is_continuous(),
+            "label field {name:?} cannot be normalized"
+        );
         if let Some(existing) = field.normalization() {
             ensure!(
                 existing == normalization,
@@ -405,6 +450,10 @@ fn parse_codec(value: &str) -> Result<MsgChunkCodecSelection> {
     Ok(match value {
         "auto:lossless" => MsgChunkCodecSelection::AutoLossless,
         "auto:smallest" => MsgChunkCodecSelection::AutoSmallest,
+        "dense:u8" => MsgChunkCodecSelection::Forced(MsgChunkCodec::DenseU8),
+        "dense:u16" => MsgChunkCodecSelection::Forced(MsgChunkCodec::DenseU16),
+        "palette:u8" => MsgChunkCodecSelection::Forced(MsgChunkCodec::PaletteU8),
+        "palette:u16" => MsgChunkCodecSelection::Forced(MsgChunkCodec::PaletteU16),
         "uniform:f64" => MsgChunkCodecSelection::Forced(MsgChunkCodec::UniformF64),
         "dense:f32" => MsgChunkCodecSelection::Forced(MsgChunkCodec::DenseF32),
         "dense:f64" => MsgChunkCodecSelection::Forced(MsgChunkCodec::DenseF64),
@@ -549,6 +598,10 @@ name = "density"
         let examples = [
             (include_str!("../examples/amrex.toml"), InputFormat::Amrex),
             (include_str!("../examples/vti.toml"), InputFormat::Vti),
+            (
+                include_str!("../examples/image-stack.toml"),
+                InputFormat::ImageStack,
+            ),
             (include_str!("../examples/codecs.toml"), InputFormat::Vti),
         ];
 

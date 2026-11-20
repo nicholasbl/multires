@@ -18,6 +18,8 @@ pub enum GridError {
     AabbVolumeDoesNotFitUsize,
     /// The supplied dense value slice length did not match the AABB volume.
     ValuesLengthMismatch { expected: usize, actual: usize },
+    /// A bulk conversion would change or truncate a scalar value.
+    ValueNotRepresentable,
 }
 
 pub(crate) enum SparseGridChunkView<'a, T>

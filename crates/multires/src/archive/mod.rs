@@ -28,6 +28,12 @@ const NORMALIZATION_RECORD_LENGTH: usize = 24;
 /// A concrete codec available for scalar chunks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MsgChunkCodec {
+    UniformU8,
+    UniformU16,
+    DenseU8,
+    DenseU16,
+    PaletteU8,
+    PaletteU16,
     UniformF64,
     DenseF32,
     DenseF64,
@@ -190,6 +196,8 @@ pub struct MsgArchiveFieldLevelStats {
 
 #[derive(Debug)]
 enum MsgChunkValues {
+    LabelU8(Vec<u8>),
+    LabelU16(Vec<u16>),
     F32(Vec<f32>),
     F64(Vec<f64>),
 }
@@ -591,6 +599,12 @@ impl<'a> MsgArchiveFieldLevel<'a> {
             self.scalar_masks,
         )?;
         match &mut buffer.values {
+            MsgChunkValues::LabelU8(values) => {
+                chunk_codec::decode_archived_chunk_label_u8(self.scalar_view(), chunk, values)?;
+            }
+            MsgChunkValues::LabelU16(values) => {
+                chunk_codec::decode_archived_chunk_label_u16(self.scalar_view(), chunk, values)?;
+            }
             MsgChunkValues::F32(values) => {
                 chunk_codec::decode_archived_chunk_f32(self.scalar_view(), chunk, values)?;
             }
@@ -626,6 +640,8 @@ impl MsgArchiveScalarAccessor<'_> {
 impl MsgChunkBuffer {
     pub fn new(scalar_type: MsgScalarType) -> Self {
         let values = match scalar_type {
+            MsgScalarType::LabelU8 => MsgChunkValues::LabelU8(vec![0; CHUNK_VOLUME]),
+            MsgScalarType::LabelU16 => MsgChunkValues::LabelU16(vec![0; CHUNK_VOLUME]),
             MsgScalarType::F32 => MsgChunkValues::F32(vec![0.0; CHUNK_VOLUME]),
             MsgScalarType::F64 => MsgChunkValues::F64(vec![0.0; CHUNK_VOLUME]),
         };
@@ -639,6 +655,8 @@ impl MsgChunkBuffer {
 
     pub fn scalar_type(&self) -> MsgScalarType {
         match self.values {
+            MsgChunkValues::LabelU8(_) => MsgScalarType::LabelU8,
+            MsgChunkValues::LabelU16(_) => MsgScalarType::LabelU16,
             MsgChunkValues::F32(_) => MsgScalarType::F32,
             MsgChunkValues::F64(_) => MsgScalarType::F64,
         }
@@ -668,6 +686,8 @@ impl MsgChunkBuffer {
         self.contains_local(position).then(|| {
             let index = chunk_local_index(position);
             match &self.values {
+                MsgChunkValues::LabelU8(values) => f64::from(values[index]),
+                MsgChunkValues::LabelU16(values) => f64::from(values[index]),
                 MsgChunkValues::F32(values) => f64::from(values[index]),
                 MsgChunkValues::F64(values) => values[index],
             }
@@ -715,6 +735,12 @@ pub fn write_msg(
             let field_level = &field.levels()[level_index];
             let field_acceleration = &acceleration[field_index][level_index];
             let encoded = match field_level.values() {
+                MsgScalarGrid::LabelU8(grid) => {
+                    chunk_codec::encode_label_u8(grid, policies[field_index])
+                }
+                MsgScalarGrid::LabelU16(grid) => {
+                    chunk_codec::encode_label_u16(grid, policies[field_index])
+                }
                 MsgScalarGrid::F32(grid) => chunk_codec::encode_f32(grid, policies[field_index]),
                 MsgScalarGrid::F64(grid) => chunk_codec::encode_f64(grid, policies[field_index]),
             }
@@ -937,6 +963,14 @@ fn decode_msg(view: &MsgArchive<'_>, requested: Option<&[&str]>) -> Result<MsgDa
                 payloads: block_slice(bytes, data_end, &archived_level.data_payloads)?,
             };
             let values = match scalar_type {
+                MsgScalarType::LabelU8 => MsgScalarGrid::LabelU8(
+                    chunk_codec::decode_label_u8(scalar_view, expected_bounds)
+                        .context("decoding label u8 MSG field")?,
+                ),
+                MsgScalarType::LabelU16 => MsgScalarGrid::LabelU16(
+                    chunk_codec::decode_label_u16(scalar_view, expected_bounds)
+                        .context("decoding label u16 MSG field")?,
+                ),
                 MsgScalarType::F32 => MsgScalarGrid::F32(
                     chunk_codec::decode_f32(scalar_view, expected_bounds)
                         .context("decoding f32 MSG field")?,
@@ -995,10 +1029,12 @@ fn decode_msg(view: &MsgArchive<'_>, requested: Option<&[&str]>) -> Result<MsgDa
                 ranges.len() == mask.chunk_count(),
                 "acceleration range count does not match active-cube chunks"
             );
-            field_level.set_acceleration(MsgFieldAcceleration {
-                value_ranges: ranges,
-                active_cubes: mask,
-            });
+            if scalar_type.is_continuous() {
+                field_level.set_acceleration(MsgFieldAcceleration {
+                    value_ranges: ranges,
+                    active_cubes: mask,
+                });
+            }
             field_levels.push(field_level);
         }
         let mut decoded_field = MsgField::new(field.name.as_str(), scalar_type, field_levels);
@@ -1116,6 +1152,28 @@ fn physical_domain(normalization: Option<MsgNormalization>) -> (f64, f64) {
 }
 
 fn validate_codec_policy(scalar_type: MsgScalarType, policy: &MsgFieldCodec) -> Result<()> {
+    if scalar_type.is_label() {
+        ensure!(
+            policy.error_tolerance.is_none(),
+            "label fields do not accept error tolerances"
+        );
+        let compatible = match (scalar_type, policy.selection) {
+            (_, MsgChunkCodecSelection::AutoLossless) => true,
+            (_, MsgChunkCodecSelection::AutoSmallest) => false,
+            (MsgScalarType::LabelU8, MsgChunkCodecSelection::Forced(codec)) => {
+                matches!(codec, MsgChunkCodec::DenseU8 | MsgChunkCodec::PaletteU8)
+            }
+            (MsgScalarType::LabelU16, MsgChunkCodecSelection::Forced(codec)) => {
+                matches!(codec, MsgChunkCodec::DenseU16 | MsgChunkCodec::PaletteU16)
+            }
+            _ => false,
+        };
+        ensure!(
+            compatible,
+            "codec selection is incompatible with the label scalar type"
+        );
+        return Ok(());
+    }
     if let Some(error) = policy.error_tolerance {
         ensure!(
             error.absolute.is_finite() && error.absolute >= 0.0,
@@ -1157,6 +1215,8 @@ fn validate_codec_policy(scalar_type: MsgScalarType, policy: &MsgFieldCodec) -> 
 
 fn scalar_type_tag(scalar_type: MsgScalarType) -> u8 {
     match scalar_type {
+        MsgScalarType::LabelU8 => chunk_codec::TYPE_LABEL_U8,
+        MsgScalarType::LabelU16 => chunk_codec::TYPE_LABEL_U16,
         MsgScalarType::F32 => chunk_codec::TYPE_F32,
         MsgScalarType::F64 => chunk_codec::TYPE_F64,
     }
@@ -1164,6 +1224,8 @@ fn scalar_type_tag(scalar_type: MsgScalarType) -> u8 {
 
 fn scalar_type_from_tag(tag: u8) -> Result<MsgScalarType> {
     match tag {
+        chunk_codec::TYPE_LABEL_U8 => Ok(MsgScalarType::LabelU8),
+        chunk_codec::TYPE_LABEL_U16 => Ok(MsgScalarType::LabelU16),
         chunk_codec::TYPE_F32 => Ok(MsgScalarType::F32),
         chunk_codec::TYPE_F64 => Ok(MsgScalarType::F64),
         _ => bail!("unsupported MSG scalar type {tag}"),
@@ -1368,7 +1430,13 @@ fn validate_archive(
             "duplicate MSG field name {:?}",
             field.name
         );
-        scalar_type_from_tag(field.scalar_type)?;
+        let scalar_type = scalar_type_from_tag(field.scalar_type)?;
+        if scalar_type.is_label() {
+            ensure!(
+                field.error_tolerance_kind == 0,
+                "label field has error-tolerance metadata"
+            );
+        }
         match field.error_tolerance_kind {
             0 => ensure!(
                 field.error_absolute.to_native() == 0.0
@@ -1495,6 +1563,55 @@ mod tests {
                 .values()
                 .get(UVec3::new(1, 2, 3)),
             Some(0.45)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn label_field_round_trips_with_palette_and_no_iso_acceleration() -> Result<()> {
+        let extent = UVec3::splat(CHUNK_SIZE);
+        let mut dataset = MsgDataset::new(
+            0.0,
+            crate::cell_center_to_point_geometry(DMat4::IDENTITY)?,
+            vec![MsgLevel {
+                index_origin: IVec3::ZERO,
+                point_extent: extent,
+                scale: DVec3::ONE,
+                refinement_ratio_from_coarse: None,
+            }],
+        )?;
+        let mut values = MsgScalarGrid::new(extent, MsgScalarType::LabelU8);
+        let dense = (0..CHUNK_VOLUME)
+            .map(|index| if index % 2 == 0 { 4_u8 } else { 9_u8 })
+            .collect::<Vec<_>>();
+        values
+            .write_u8_values(crate::sparse::Aabb3u::full_grid(extent), &dense)
+            .map_err(|error| anyhow::anyhow!("writing labels: {error:?}"))?;
+        dataset.add_field(MsgField::new(
+            "segmentation",
+            MsgScalarType::LabelU8,
+            vec![MsgFieldLevel::new(values)],
+        ))?;
+
+        let mut bytes = Vec::new();
+        write_msg(&dataset, &MsgWriteOptions::default(), &mut bytes)?;
+        let archive = view_msg(&bytes)?;
+        let field = archive.field("segmentation").unwrap();
+        assert_eq!(field.scalar_type(), MsgScalarType::LabelU8);
+        let level = field.level(0)?;
+        assert_eq!(level.value_ranges().count(), 0);
+        assert_eq!(
+            level.statistics()?.codecs[0].codec,
+            MsgChunkCodec::PaletteU8
+        );
+        assert_eq!(level.get(UVec3::ZERO)?, Some(4.0));
+        assert_eq!(level.get(UVec3::X)?, Some(9.0));
+        let decoded = archive.decode_fields(&["segmentation"])?;
+        assert_eq!(
+            decoded.field("segmentation").unwrap().levels()[0]
+                .values()
+                .get(UVec3::X),
+            Some(9.0)
         );
         Ok(())
     }

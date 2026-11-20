@@ -1,3 +1,5 @@
+use std::collections::{HashMap, HashSet};
+
 use anyhow::{Context, Result, bail, ensure};
 use rayon::prelude::*;
 
@@ -13,6 +15,8 @@ const CHUNK_SIZE: u32 = 1 << CHUNK_BITS;
 
 pub(super) const TYPE_F32: u8 = 0;
 pub(super) const TYPE_F64: u8 = 1;
+pub(super) const TYPE_LABEL_U8: u8 = 2;
+pub(super) const TYPE_LABEL_U16: u8 = 3;
 
 // On-disk identifiers: never renumber or reuse these. New codecs get new ids;
 // incompatible changes to an existing codec increment its codec version.
@@ -28,15 +32,54 @@ pub(super) const CODEC_AFFINE_F64: u32 = 8;
 pub(super) const CODEC_AFFINE_RESIDUAL_U8: u32 = 9;
 pub(super) const CODEC_AFFINE_RESIDUAL_U16: u32 = 10;
 pub(super) const CODEC_AFFINE_RESIDUAL_U32: u32 = 11;
+pub(super) const CODEC_UNIFORM_U8: u32 = 12;
+pub(super) const CODEC_UNIFORM_U16: u32 = 13;
+pub(super) const CODEC_DENSE_U8: u32 = 14;
+pub(super) const CODEC_DENSE_U16: u32 = 15;
+pub(super) const CODEC_PALETTE_U8: u32 = 16;
+pub(super) const CODEC_PALETTE_U16: u32 = 17;
 const CODEC_VERSION: u16 = 1;
 
 trait Scalar: Copy + PartialEq + Default + Send + Sync {
     const TYPE: u8;
     const WIDTH: usize;
+    const LABEL: bool = false;
 
     fn to_domain(self) -> f64;
     fn from_domain(value: f64) -> Self;
     fn append_raw(self, bytes: &mut Vec<u8>);
+}
+
+impl Scalar for u8 {
+    const TYPE: u8 = TYPE_LABEL_U8;
+    const WIDTH: usize = 1;
+    const LABEL: bool = true;
+
+    fn to_domain(self) -> f64 {
+        f64::from(self)
+    }
+    fn from_domain(value: f64) -> Self {
+        value as u8
+    }
+    fn append_raw(self, bytes: &mut Vec<u8>) {
+        bytes.push(self);
+    }
+}
+
+impl Scalar for u16 {
+    const TYPE: u8 = TYPE_LABEL_U16;
+    const WIDTH: usize = 2;
+    const LABEL: bool = true;
+
+    fn to_domain(self) -> f64 {
+        f64::from(self)
+    }
+    fn from_domain(value: f64) -> Self {
+        value as u16
+    }
+    fn append_raw(self, bytes: &mut Vec<u8>) {
+        bytes.extend_from_slice(&self.to_le_bytes());
+    }
 }
 
 impl Scalar for f32 {
@@ -109,7 +152,6 @@ struct Candidate<T> {
     plan: CandidatePlan<T>,
 }
 
-#[derive(Clone, Copy)]
 enum CandidatePlan<T> {
     DenseNative,
     DenseF32,
@@ -121,6 +163,10 @@ enum CandidatePlan<T> {
         bits: u8,
     },
     Affine([f64; 4]),
+    Palette {
+        values: Vec<T>,
+        bits: u8,
+    },
 }
 
 #[derive(Clone, Copy)]
@@ -154,12 +200,29 @@ impl<T: Scalar> Candidate<T> {
                 metadata + CHUNK_VOLUME * usize::from(bits / 8)
             }
             CandidatePlan::Affine(_) => 32,
+            CandidatePlan::Palette { ref values, bits } => {
+                4 + values.len() * T::WIDTH + (CHUNK_VOLUME * usize::from(bits)).div_ceil(8)
+            }
         }
     }
 }
 
 pub(super) fn encode_f32(
     grid: &SparseGrid3<f32>,
+    policy: ResolvedFieldCodec,
+) -> Result<EncodedScalarGrid> {
+    encode_grid(grid, policy)
+}
+
+pub(super) fn encode_label_u8(
+    grid: &SparseGrid3<u8>,
+    policy: ResolvedFieldCodec,
+) -> Result<EncodedScalarGrid> {
+    encode_grid(grid, policy)
+}
+
+pub(super) fn encode_label_u16(
+    grid: &SparseGrid3<u16>,
     policy: ResolvedFieldCodec,
 ) -> Result<EncodedScalarGrid> {
     encode_grid(grid, policy)
@@ -194,15 +257,18 @@ fn encode_grid<T: Scalar>(
     );
 
     let encoded = grid.par_map_chunks(|chunk| match chunk {
-        SparseGridChunkView::Uniform { key, value, mask } => Ok(PendingScalarChunk {
-            key: uvec3_to_array(key),
-            mask: *mask.as_words(),
-            mask_full: mask.is_full(),
-            codec_id: CODEC_UNIFORM,
-            max_abs_error: 0.0,
-            metadata: encode_uniform(value),
-            payload: Vec::new(),
-        }),
+        SparseGridChunkView::Uniform { key, value, mask } => {
+            let (codec_id, metadata) = encode_structural_uniform(value);
+            Ok(PendingScalarChunk {
+                key: uvec3_to_array(key),
+                mask: *mask.as_words(),
+                mask_full: mask.is_full(),
+                codec_id,
+                max_abs_error: 0.0,
+                metadata,
+                payload: Vec::new(),
+            })
+        }
         SparseGridChunkView::Dense { key, values, mask } => {
             encode_dense(key, values, mask.as_words(), policy)
         }
@@ -249,6 +315,19 @@ fn encode_grid<T: Scalar>(
         masks,
         payloads,
     })
+}
+
+fn encode_structural_uniform<T: Scalar>(value: T) -> (u32, Vec<u8>) {
+    if T::TYPE == TYPE_LABEL_U8 {
+        (CODEC_UNIFORM_U8, vec![value.to_domain() as u8])
+    } else if T::TYPE == TYPE_LABEL_U16 {
+        (
+            CODEC_UNIFORM_U16,
+            (value.to_domain() as u16).to_le_bytes().to_vec(),
+        )
+    } else {
+        (CODEC_UNIFORM, encode_uniform(value))
+    }
 }
 
 fn encode_dense<T: Scalar>(
@@ -326,6 +405,32 @@ fn materialize_candidate<T: Scalar>(
             append_f64s(&mut metadata, &coefficients);
             (metadata, Vec::new())
         }
+        CandidatePlan::Palette {
+            values: palette,
+            bits,
+        } => {
+            let mut metadata = Vec::with_capacity(4 + palette.len() * T::WIDTH);
+            metadata.push(bits);
+            metadata.push(0);
+            metadata.extend_from_slice(&(palette.len() as u16).to_le_bytes());
+            for &value in &palette {
+                value.append_raw(&mut metadata);
+            }
+            let mut payload = vec![0_u8; (CHUNK_VOLUME * usize::from(bits)).div_ceil(8)];
+            let mut codes = HashMap::with_capacity(palette.len());
+            for (code, value) in palette.iter().enumerate() {
+                codes.insert(value.to_domain() as usize, code);
+            }
+            for (index, &value) in values.iter().enumerate() {
+                let code = if present(mask, index) {
+                    codes[&(value.to_domain() as usize)]
+                } else {
+                    0
+                };
+                write_packed_code(&mut payload, index, bits, code as u16);
+            }
+            (metadata, payload)
+        }
     };
     EncodedCandidate {
         codec,
@@ -362,6 +467,9 @@ fn select_candidate<T: Scalar>(
     mask: &[u64; MASK_WORDS],
     policy: ResolvedFieldCodec,
 ) -> Result<Candidate<T>> {
+    if T::LABEL {
+        return select_label_candidate(values, mask, policy);
+    }
     match policy.selection {
         MsgChunkCodecSelection::AutoLossless => {
             ensure!(
@@ -396,6 +504,17 @@ fn select_candidate<T: Scalar>(
         }
         MsgChunkCodecSelection::Forced(codec) => {
             let candidate = match codec {
+                MsgChunkCodec::UniformU8
+                | MsgChunkCodec::UniformU16
+                | MsgChunkCodec::DenseU8
+                | MsgChunkCodec::DenseU16
+                | MsgChunkCodec::PaletteU8
+                | MsgChunkCodec::PaletteU16 => {
+                    bail!(
+                        "forced codec {} is incompatible with a continuous scalar type",
+                        codec_name(codec)
+                    )
+                }
                 MsgChunkCodec::DenseF32 if T::TYPE == TYPE_F32 => {
                     ensure!(
                         policy.error_tolerance.is_none(),
@@ -462,6 +581,101 @@ fn select_candidate<T: Scalar>(
     }
 }
 
+fn select_label_candidate<T: Scalar>(
+    values: &[T],
+    mask: &[u64; MASK_WORDS],
+    policy: ResolvedFieldCodec,
+) -> Result<Candidate<T>> {
+    ensure!(
+        policy.error_tolerance.is_none(),
+        "label codecs do not accept an error tolerance"
+    );
+    let dense = dense_native_candidate(values);
+    let palette = label_palette_candidate(values, mask);
+    match policy.selection {
+        MsgChunkCodecSelection::AutoLossless => {
+            let mut best = dense;
+            if let Some(palette) = palette {
+                choose_smaller(&mut best, palette);
+            }
+            Ok(best)
+        }
+        MsgChunkCodecSelection::AutoSmallest => {
+            bail!("auto:smallest is a lossy continuous-field policy and cannot encode labels")
+        }
+        MsgChunkCodecSelection::Forced(codec) => match codec {
+            MsgChunkCodec::DenseU8 if T::TYPE == TYPE_LABEL_U8 => Ok(dense),
+            MsgChunkCodec::DenseU16 if T::TYPE == TYPE_LABEL_U16 => Ok(dense),
+            MsgChunkCodec::PaletteU8 if T::TYPE == TYPE_LABEL_U8 => palette
+                .context("forced palette codec requires at least two distinct present labels"),
+            MsgChunkCodec::PaletteU16 if T::TYPE == TYPE_LABEL_U16 => palette
+                .context("forced palette codec requires at least two distinct present labels"),
+            _ => bail!(
+                "forced codec {} is incompatible with this label type",
+                codec_name(codec)
+            ),
+        },
+    }
+}
+
+fn label_palette_candidate<T: Scalar>(
+    values: &[T],
+    mask: &[u64; MASK_WORDS],
+) -> Option<Candidate<T>> {
+    let mut palette = Vec::new();
+    let mut seen = HashSet::new();
+    for (index, &value) in values.iter().enumerate() {
+        let code = value.to_domain() as usize;
+        if present(mask, index) && seen.insert(code) {
+            palette.push(value);
+        }
+    }
+    palette.sort_by(|a, b| a.to_domain().total_cmp(&b.to_domain()));
+    let bits = match palette.len() {
+        0 | 1 => return None,
+        2 => 1,
+        3..=4 => 2,
+        5..=16 => 4,
+        17..=256 => 8,
+        _ => 16,
+    };
+    Some(Candidate {
+        codec: if T::TYPE == TYPE_LABEL_U8 {
+            MsgChunkCodec::PaletteU8
+        } else {
+            MsgChunkCodec::PaletteU16
+        },
+        max_abs_error: 0.0,
+        plan: CandidatePlan::Palette {
+            values: palette,
+            bits,
+        },
+    })
+}
+
+fn write_packed_code(payload: &mut [u8], index: usize, bits: u8, code: u16) {
+    let bit = index * usize::from(bits);
+    let byte = bit / 8;
+    let shift = bit % 8;
+    let encoded = u32::from(code) << shift;
+    for offset in 0..3 {
+        if let Some(slot) = payload.get_mut(byte + offset) {
+            *slot |= (encoded >> (offset * 8)) as u8;
+        }
+    }
+}
+
+fn read_packed_code(payload: &[u8], index: usize, bits: u8) -> usize {
+    let bit = index * usize::from(bits);
+    let byte = bit / 8;
+    let shift = bit % 8;
+    let mut encoded = 0_u32;
+    for offset in 0..3 {
+        encoded |= u32::from(payload.get(byte + offset).copied().unwrap_or(0)) << (offset * 8);
+    }
+    ((encoded >> shift) & ((1_u32 << bits) - 1)) as usize
+}
+
 fn required_error(policy: ResolvedFieldCodec) -> Result<ErrorMetric> {
     let tolerance = policy
         .error_tolerance
@@ -476,6 +690,12 @@ fn required_error(policy: ResolvedFieldCodec) -> Result<ErrorMetric> {
 
 fn codec_id(codec: MsgChunkCodec) -> u32 {
     match codec {
+        MsgChunkCodec::UniformU8 => CODEC_UNIFORM_U8,
+        MsgChunkCodec::UniformU16 => CODEC_UNIFORM_U16,
+        MsgChunkCodec::DenseU8 => CODEC_DENSE_U8,
+        MsgChunkCodec::DenseU16 => CODEC_DENSE_U16,
+        MsgChunkCodec::PaletteU8 => CODEC_PALETTE_U8,
+        MsgChunkCodec::PaletteU16 => CODEC_PALETTE_U16,
         MsgChunkCodec::UniformF64 => CODEC_UNIFORM,
         MsgChunkCodec::DenseF32 => CODEC_DENSE_F32,
         MsgChunkCodec::DenseF64 => CODEC_DENSE_F64,
@@ -491,6 +711,12 @@ fn codec_id(codec: MsgChunkCodec) -> u32 {
 
 pub(super) fn codec_name(codec: MsgChunkCodec) -> &'static str {
     match codec {
+        MsgChunkCodec::UniformU8 => "uniform:u8",
+        MsgChunkCodec::UniformU16 => "uniform:u16",
+        MsgChunkCodec::DenseU8 => "dense:u8",
+        MsgChunkCodec::DenseU16 => "dense:u16",
+        MsgChunkCodec::PaletteU8 => "palette:u8",
+        MsgChunkCodec::PaletteU16 => "palette:u16",
         MsgChunkCodec::UniformF64 => "uniform:f64",
         MsgChunkCodec::DenseF32 => "dense:f32",
         MsgChunkCodec::DenseF64 => "dense:f64",
@@ -506,6 +732,12 @@ pub(super) fn codec_name(codec: MsgChunkCodec) -> &'static str {
 
 pub(super) fn codec_from_id(codec_id: u32) -> Option<MsgChunkCodec> {
     Some(match codec_id {
+        CODEC_UNIFORM_U8 => MsgChunkCodec::UniformU8,
+        CODEC_UNIFORM_U16 => MsgChunkCodec::UniformU16,
+        CODEC_DENSE_U8 => MsgChunkCodec::DenseU8,
+        CODEC_DENSE_U16 => MsgChunkCodec::DenseU16,
+        CODEC_PALETTE_U8 => MsgChunkCodec::PaletteU8,
+        CODEC_PALETTE_U16 => MsgChunkCodec::PaletteU16,
         CODEC_UNIFORM => MsgChunkCodec::UniformF64,
         CODEC_DENSE_F32 => MsgChunkCodec::DenseF32,
         CODEC_DENSE_F64 => MsgChunkCodec::DenseF64,
@@ -559,6 +791,8 @@ fn choose_smaller<T: Scalar>(best: &mut Candidate<T>, candidate: Candidate<T>) {
 fn dense_native_candidate<T: Scalar>(_values: &[T]) -> Candidate<T> {
     Candidate {
         codec: match T::TYPE {
+            TYPE_LABEL_U8 => MsgChunkCodec::DenseU8,
+            TYPE_LABEL_U16 => MsgChunkCodec::DenseU16,
             TYPE_F32 => MsgChunkCodec::DenseF32,
             TYPE_F64 => MsgChunkCodec::DenseF64,
             _ => unreachable!(),
@@ -735,6 +969,20 @@ pub(super) fn decode_f64(
     decode_grid(archive, expected_bounds)
 }
 
+pub(super) fn decode_label_u8(
+    archive: ArchivedScalarGridView<'_>,
+    expected_bounds: glam::UVec3,
+) -> Result<SparseGrid3<u8>> {
+    decode_grid(archive, expected_bounds)
+}
+
+pub(super) fn decode_label_u16(
+    archive: ArchivedScalarGridView<'_>,
+    expected_bounds: glam::UVec3,
+) -> Result<SparseGrid3<u16>> {
+    decode_grid(archive, expected_bounds)
+}
+
 pub(super) fn validate_archived_grid(
     archive: ArchivedScalarGridView<'_>,
     expected_bounds: glam::UVec3,
@@ -769,6 +1017,12 @@ pub(super) fn validate_archived_grid(
             max_abs_error.is_finite() && max_abs_error >= 0.0,
             "invalid chunk error bound"
         );
+        if matches!(expected_type, TYPE_LABEL_U8 | TYPE_LABEL_U16) {
+            ensure!(
+                max_abs_error == 0.0,
+                "label chunk has a nonzero error bound"
+            );
+        }
         let key = chunk.key.map(|value| value.to_native());
         ensure!(
             previous_key.is_none_or(|previous| previous < key),
@@ -811,7 +1065,74 @@ pub(super) fn validate_archived_grid(
         let payload_length = validate_payload(chunk, archive.payloads)?.len();
         expected_payload_offset += payload_length as u64;
         match codec_id {
+            CODEC_UNIFORM_U8 => {
+                ensure!(
+                    expected_type == TYPE_LABEL_U8,
+                    "uniform u8 chunk type mismatch"
+                );
+                ensure!(
+                    payload_length == 0 && chunk.metadata.len() == 1,
+                    "invalid uniform u8 chunk"
+                );
+            }
+            CODEC_UNIFORM_U16 => {
+                ensure!(
+                    expected_type == TYPE_LABEL_U16,
+                    "uniform u16 chunk type mismatch"
+                );
+                ensure!(
+                    payload_length == 0 && chunk.metadata.len() == 2,
+                    "invalid uniform u16 chunk"
+                );
+            }
+            CODEC_DENSE_U8 => {
+                ensure!(
+                    expected_type == TYPE_LABEL_U8,
+                    "dense u8 chunk type mismatch"
+                );
+                ensure!(
+                    chunk.metadata.is_empty() && payload_length == CHUNK_VOLUME,
+                    "invalid dense u8 chunk"
+                );
+            }
+            CODEC_DENSE_U16 => {
+                ensure!(
+                    expected_type == TYPE_LABEL_U16,
+                    "dense u16 chunk type mismatch"
+                );
+                ensure!(
+                    chunk.metadata.is_empty() && payload_length == CHUNK_VOLUME * 2,
+                    "invalid dense u16 chunk"
+                );
+            }
+            id @ (CODEC_PALETTE_U8 | CODEC_PALETTE_U16) => {
+                let required_type = if id == CODEC_PALETTE_U8 {
+                    TYPE_LABEL_U8
+                } else {
+                    TYPE_LABEL_U16
+                };
+                ensure!(
+                    expected_type == required_type,
+                    "palette chunk type mismatch"
+                );
+                let (bits, palette) = decode_palette_metadata(&chunk.metadata, required_type)?;
+                ensure!(
+                    payload_length == (CHUNK_VOLUME * usize::from(bits)).div_ceil(8),
+                    "invalid palette payload length"
+                );
+                for index in 0..CHUNK_VOLUME {
+                    ensure!(
+                        read_packed_code(validate_payload(chunk, archive.payloads)?, index, bits)
+                            < palette.len(),
+                        "palette index is out of bounds"
+                    );
+                }
+            }
             CODEC_UNIFORM => {
+                ensure!(
+                    matches!(expected_type, TYPE_F32 | TYPE_F64),
+                    "floating uniform chunk type mismatch"
+                );
                 ensure!(payload_length == 0, "uniform chunk has a payload");
                 read_f64_array::<1>(&chunk.metadata)?;
             }
@@ -824,6 +1145,10 @@ pub(super) fn validate_archived_grid(
                 );
             }
             CODEC_DENSE_F32 => {
+                ensure!(
+                    matches!(expected_type, TYPE_F32 | TYPE_F64),
+                    "dense f32 chunk type mismatch"
+                );
                 ensure!(chunk.metadata.is_empty(), "dense f32 chunk has metadata");
                 ensure!(
                     payload_length == CHUNK_VOLUME * 4,
@@ -831,6 +1156,10 @@ pub(super) fn validate_archived_grid(
                 );
             }
             id @ (CODEC_QUANTIZED_U8 | CODEC_QUANTIZED_U16 | CODEC_QUANTIZED_U32) => {
+                ensure!(
+                    matches!(expected_type, TYPE_F32 | TYPE_F64),
+                    "quantized chunk type mismatch"
+                );
                 let width = usize::from(codec_bits(id) / 8);
                 ensure!(
                     payload_length == CHUNK_VOLUME * width,
@@ -839,12 +1168,20 @@ pub(super) fn validate_archived_grid(
                 decode_quantized_metadata(&chunk.metadata, false)?;
             }
             CODEC_AFFINE_F64 => {
+                ensure!(
+                    matches!(expected_type, TYPE_F32 | TYPE_F64),
+                    "affine chunk type mismatch"
+                );
                 ensure!(payload_length == 0, "affine chunk has a payload");
                 read_f64_array::<4>(&chunk.metadata)?;
             }
             id @ (CODEC_AFFINE_RESIDUAL_U8
             | CODEC_AFFINE_RESIDUAL_U16
             | CODEC_AFFINE_RESIDUAL_U32) => {
+                ensure!(
+                    matches!(expected_type, TYPE_F32 | TYPE_F64),
+                    "affine residual chunk type mismatch"
+                );
                 let width = usize::from(codec_bits(id) / 8);
                 ensure!(
                     payload_length == CHUNK_VOLUME * width,
@@ -900,6 +1237,24 @@ pub(super) fn decode_archived_value(
     let codec_id = chunk.codec_id.to_native();
     let payload = validate_payload(chunk, archive.payloads)?;
     let physical = match codec_id {
+        CODEC_UNIFORM_U8 => f64::from(chunk.metadata[0]),
+        CODEC_UNIFORM_U16 => f64::from(u16::from_le_bytes(chunk.metadata[..2].try_into().unwrap())),
+        CODEC_DENSE_U8 => f64::from(payload[index]),
+        CODEC_DENSE_U16 => f64::from(payload_code::<2>(payload, index) as u16),
+        id @ (CODEC_PALETTE_U8 | CODEC_PALETTE_U16) => {
+            let expected_type = if id == CODEC_PALETTE_U8 {
+                TYPE_LABEL_U8
+            } else {
+                TYPE_LABEL_U16
+            };
+            let (bits, palette) = decode_palette_metadata(&chunk.metadata, expected_type)?;
+            let code = read_packed_code(payload, index, bits);
+            f64::from(
+                *palette
+                    .get(code)
+                    .context("palette index is out of bounds")?,
+            )
+        }
         CODEC_UNIFORM => read_f64_array::<1>(&chunk.metadata)?[0],
         CODEC_DENSE_F64 => f64::from_bits(payload_code::<8>(payload, index)),
         CODEC_DENSE_F32 => f64::from(f32::from_bits(payload_code::<4>(payload, index) as u32)),
@@ -954,6 +1309,22 @@ pub(super) fn decode_archived_chunk_f64(
     decode_archived_chunk_into(archive, chunk, values)
 }
 
+pub(super) fn decode_archived_chunk_label_u8(
+    archive: ArchivedScalarGridView<'_>,
+    chunk: &ArchivedScalarChunkRecord,
+    values: &mut [u8],
+) -> Result<()> {
+    decode_archived_chunk_into(archive, chunk, values)
+}
+
+pub(super) fn decode_archived_chunk_label_u16(
+    archive: ArchivedScalarGridView<'_>,
+    chunk: &ArchivedScalarChunkRecord,
+    values: &mut [u16],
+) -> Result<()> {
+    decode_archived_chunk_into(archive, chunk, values)
+}
+
 fn decode_archived_chunk_into<T: Scalar>(
     archive: ArchivedScalarGridView<'_>,
     chunk: &ArchivedScalarChunkRecord,
@@ -980,6 +1351,47 @@ fn decode_archived_chunk_into<T: Scalar>(
         Ok(())
     };
     match chunk.codec_id.to_native() {
+        CODEC_UNIFORM_U8 => {
+            let physical = f64::from(chunk.metadata[0]);
+            for index in 0..CHUNK_VOLUME {
+                store(index, physical)?;
+            }
+        }
+        CODEC_UNIFORM_U16 => {
+            let physical = f64::from(u16::from_le_bytes(chunk.metadata[..2].try_into().unwrap()));
+            for index in 0..CHUNK_VOLUME {
+                store(index, physical)?;
+            }
+        }
+        CODEC_DENSE_U8 => {
+            for index in 0..CHUNK_VOLUME {
+                store(index, f64::from(payload[index]))?;
+            }
+        }
+        CODEC_DENSE_U16 => {
+            for index in 0..CHUNK_VOLUME {
+                store(index, f64::from(payload_code::<2>(payload, index) as u16))?;
+            }
+        }
+        id @ (CODEC_PALETTE_U8 | CODEC_PALETTE_U16) => {
+            let expected_type = if id == CODEC_PALETTE_U8 {
+                TYPE_LABEL_U8
+            } else {
+                TYPE_LABEL_U16
+            };
+            let (bits, palette) = decode_palette_metadata(&chunk.metadata, expected_type)?;
+            for index in 0..CHUNK_VOLUME {
+                let code = read_packed_code(payload, index, bits);
+                store(
+                    index,
+                    f64::from(
+                        *palette
+                            .get(code)
+                            .context("palette index is out of bounds")?,
+                    ),
+                )?;
+            }
+        }
         CODEC_UNIFORM => {
             let physical = read_f64_array::<1>(&chunk.metadata)?[0];
             for index in 0..CHUNK_VOLUME {
@@ -1051,8 +1463,19 @@ fn decode_grid<T: Scalar>(
             chunk.mask_offset.to_native(),
             archive.masks,
         )?;
-        if chunk.codec_id.to_native() == CODEC_UNIFORM {
-            let value = T::from_domain(read_f64_array::<1>(&chunk.metadata)?[0]);
+        if matches!(
+            chunk.codec_id.to_native(),
+            CODEC_UNIFORM | CODEC_UNIFORM_U8 | CODEC_UNIFORM_U16
+        ) {
+            let physical = match chunk.codec_id.to_native() {
+                CODEC_UNIFORM => read_f64_array::<1>(&chunk.metadata)?[0],
+                CODEC_UNIFORM_U8 => f64::from(chunk.metadata[0]),
+                CODEC_UNIFORM_U16 => {
+                    f64::from(u16::from_le_bytes(chunk.metadata[..2].try_into().unwrap()))
+                }
+                _ => unreachable!(),
+            };
+            let value = T::from_domain(physical);
             ensure!(
                 mask.iter().all(|&word| word == 0) || value.to_domain().is_finite(),
                 "decoded chunk contains a non-finite present value"
@@ -1133,6 +1556,57 @@ fn decode_quantized_metadata(metadata: &[u8], affine: bool) -> Result<[f64; 6]> 
     );
     ensure!(values[count - 1] >= 0.0, "negative quantization step");
     Ok(values)
+}
+
+fn decode_palette_metadata(metadata: &[u8], scalar_type: u8) -> Result<(u8, Vec<u16>)> {
+    ensure!(metadata.len() >= 4, "palette metadata is truncated");
+    let bits = metadata[0];
+    ensure!(
+        matches!(bits, 1 | 2 | 4 | 8 | 16),
+        "invalid palette index width"
+    );
+    ensure!(metadata[1] == 0, "palette metadata has unsupported flags");
+    let count = usize::from(u16::from_le_bytes([metadata[2], metadata[3]]));
+    ensure!(
+        count >= 2 && count <= (1_usize << bits),
+        "invalid palette length"
+    );
+    let width = if scalar_type == TYPE_LABEL_U8 { 1 } else { 2 };
+    ensure!(
+        metadata.len() == 4 + count * width,
+        "invalid palette metadata length"
+    );
+    let mut palette = Vec::with_capacity(count);
+    for index in 0..count {
+        let offset = 4 + index * width;
+        let value = if width == 1 {
+            u16::from(metadata[offset])
+        } else {
+            u16::from_le_bytes([metadata[offset], metadata[offset + 1]])
+        };
+        ensure!(
+            palette.last().is_none_or(|&previous| previous < value),
+            "palette values are not unique and sorted"
+        );
+        palette.push(value);
+    }
+    let canonical_bits = match count {
+        2 => 1,
+        3..=4 => 2,
+        5..=16 => 4,
+        17..=256 => 8,
+        257.. => 16,
+        _ => bail!("palette must contain at least two values"),
+    };
+    ensure!(
+        bits == canonical_bits,
+        "palette index width is not canonical"
+    );
+    ensure!(
+        scalar_type != TYPE_LABEL_U8 || count <= 256,
+        "u8 palette contains too many values"
+    );
+    Ok((bits, palette))
 }
 
 fn codec_bits(codec_id: u32) -> u8 {
@@ -1288,6 +1762,54 @@ mod tests {
             },
             bounds,
         )
+    }
+
+    fn decode_owned_u8(archive: EncodedScalarGrid) -> Result<SparseGrid3<u8>> {
+        let bounds = array_to_uvec3(archive.directory.bounds);
+        let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&archive.directory)?;
+        let archived = rkyv::access::<ArchivedScalarGridRecord, rkyv::rancor::Error>(&bytes)?;
+        decode_label_u8(
+            ArchivedScalarGridView {
+                directory: archived,
+                masks: &archive.masks,
+                payloads: &archive.payloads,
+            },
+            bounds,
+        )
+    }
+
+    fn lossless_policy() -> ResolvedFieldCodec {
+        ResolvedFieldCodec {
+            selection: MsgChunkCodecSelection::AutoLossless,
+            error_tolerance: None,
+            physical_offset: 0.0,
+            physical_scale: 1.0,
+        }
+    }
+
+    #[test]
+    fn label_palette_is_exact_and_bit_packed() -> Result<()> {
+        let bounds = UVec3::splat(CHUNK_SIZE);
+        let mut grid = SparseGrid3::new(bounds);
+        let values = (0..CHUNK_VOLUME)
+            .map(|index| if index % 3 == 0 { 7_u8 } else { 42_u8 })
+            .collect::<Vec<_>>();
+        grid.write_aabb_values(grid.bounds_aabb(), &values)
+            .map_err(|error| anyhow::anyhow!("writing labels: {error:?}"))?;
+        let archive = encode_label_u8(&grid, lossless_policy())?;
+        assert_eq!(archive.directory.chunks[0].codec_id, CODEC_PALETTE_U8);
+        assert_eq!(archive.payloads.len(), CHUNK_VOLUME / 8);
+        let decoded = decode_owned_u8(archive)?;
+        for (index, expected) in values.into_iter().enumerate() {
+            let edge = CHUNK_SIZE as usize;
+            let point = UVec3::new(
+                (index % edge) as u32,
+                ((index / edge) % edge) as u32,
+                (index / (edge * edge)) as u32,
+            );
+            assert_eq!(decoded.get(point), Some(expected));
+        }
+        Ok(())
     }
 
     fn auto_policy(max_abs_error: f64) -> ResolvedFieldCodec {

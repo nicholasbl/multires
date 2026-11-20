@@ -1,0 +1,13 @@
+[input]
+path = "slices/segmentation-*.png"
+format = "image-stack"
+
+[output]
+path = "segmentation.msg"
+format = "msg"
+
+[source.image-stack]
+field = "segmentation"
+spacing = [0.7, 0.7, 1.25]
+# Values listed here become missing samples rather than implicit background.
+discard = []

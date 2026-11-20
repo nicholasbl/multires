@@ -128,6 +128,14 @@ fn validate_archive_options(archive: &MsgArchive<'_>, options: &SliceOptions) ->
         options.topology_field
     );
     ensure!(
+        archive
+            .field(&options.topology_field)
+            .unwrap()
+            .scalar_type()
+            .is_continuous(),
+        "slice topology requires a continuous field"
+    );
+    ensure!(
         !options.sampled_quantities.is_empty(),
         "slice requires at least one sampled field"
     );
@@ -140,6 +148,14 @@ fn validate_archive_options(archive: &MsgArchive<'_>, options: &SliceOptions) ->
             archive.field(&sample.field).is_some(),
             "sampled field {:?} is absent",
             sample.field
+        );
+        ensure!(
+            archive
+                .field(&sample.field)
+                .unwrap()
+                .scalar_type()
+                .is_continuous(),
+            "slice sampling requires continuous fields"
         );
         let (min, max) = (*sample.range.start(), *sample.range.end());
         ensure!(
@@ -168,6 +184,14 @@ fn validate_options(dataset: &MsgDataset, options: &SliceOptions) -> Result<()> 
         options.topology_field
     );
     ensure!(
+        dataset
+            .field(&options.topology_field)
+            .unwrap()
+            .scalar_type()
+            .is_continuous(),
+        "slice topology requires a continuous field"
+    );
+    ensure!(
         !options.sampled_quantities.is_empty(),
         "slice requires at least one sampled field"
     );
@@ -180,6 +204,14 @@ fn validate_options(dataset: &MsgDataset, options: &SliceOptions) -> Result<()> 
             dataset.field(&sample.field).is_some(),
             "sampled field {:?} is absent",
             sample.field
+        );
+        ensure!(
+            dataset
+                .field(&sample.field)
+                .unwrap()
+                .scalar_type()
+                .is_continuous(),
+            "slice sampling requires continuous fields"
         );
         let (min, max) = (*sample.range.start(), *sample.range.end());
         ensure!(

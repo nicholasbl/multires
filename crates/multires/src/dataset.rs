@@ -259,8 +259,9 @@ impl MsgDataset {
         self.validate()?;
         let rebuilt = self.derived_acceleration()?;
         for (field, levels) in self.fields.iter_mut().zip(rebuilt) {
+            let continuous = field.scalar_type.is_continuous();
             for (level, acceleration) in field.levels.iter_mut().zip(levels) {
-                level.acceleration = Some(acceleration);
+                level.acceleration = continuous.then_some(acceleration);
             }
         }
         Ok(())
@@ -390,6 +391,12 @@ fn validate_field(field: &MsgField, levels: &[MsgLevel]) -> Result<(), MsgValida
             field.name,
             field.levels.len(),
             levels.len()
+        )));
+    }
+    if field.scalar_type.is_label() && field.normalization.is_some() {
+        return Err(MsgValidationError::new(format!(
+            "label field {:?} cannot have normalization metadata",
+            field.name
         )));
     }
     if let Some(normalization) = field.normalization

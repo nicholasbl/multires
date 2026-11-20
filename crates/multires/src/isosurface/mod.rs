@@ -163,6 +163,14 @@ fn validate_archive_options(archive: &MsgArchive<'_>, options: &IsosurfaceOption
         "surface field {:?} is absent",
         options.surface.field
     );
+    ensure!(
+        archive
+            .field(&options.surface.field)
+            .unwrap()
+            .scalar_type()
+            .is_continuous(),
+        "isosurface extraction requires an f32 or f64 continuous field"
+    );
     ensure!(options.surface.value.is_finite(), "isovalue must be finite");
     ensure!(
         options.sampled_quantities.len() <= 2,
@@ -173,6 +181,14 @@ fn validate_archive_options(archive: &MsgArchive<'_>, options: &IsosurfaceOption
             archive.field(&sample.field).is_some(),
             "sampled field {:?} is absent",
             sample.field
+        );
+        ensure!(
+            archive
+                .field(&sample.field)
+                .unwrap()
+                .scalar_type()
+                .is_continuous(),
+            "isosurface sampling requires continuous fields"
         );
         let (min, max) = (*sample.range.start(), *sample.range.end());
         ensure!(
@@ -200,6 +216,14 @@ fn validate_options(dataset: &MsgDataset, options: &IsosurfaceOptions) -> Result
         "surface field {:?} is absent",
         options.surface.field
     );
+    ensure!(
+        dataset
+            .field(&options.surface.field)
+            .unwrap()
+            .scalar_type()
+            .is_continuous(),
+        "isosurface extraction requires an f32 or f64 continuous field"
+    );
     ensure!(options.surface.value.is_finite(), "isovalue must be finite");
     ensure!(
         options.sampled_quantities.len() <= 2,
@@ -210,6 +234,14 @@ fn validate_options(dataset: &MsgDataset, options: &IsosurfaceOptions) -> Result
             dataset.field(&sample.field).is_some(),
             "sampled field {:?} is absent",
             sample.field
+        );
+        ensure!(
+            dataset
+                .field(&sample.field)
+                .unwrap()
+                .scalar_type()
+                .is_continuous(),
+            "isosurface sampling requires continuous fields"
         );
         let (min, max) = (*sample.range.start(), *sample.range.end());
         ensure!(
