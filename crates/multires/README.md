@@ -7,9 +7,15 @@
 shared command-line conversion interface.
 
 An MSG file currently contains one timestep. Levels are ordered coarse to fine,
-all fields are finite scalar point data, and every field has its own unique sparse
-topology. Missing points mean “not present,” not zero. If you wish to store a “background”
-value, you must do so explicitly.
+and every field has its own unique sparse topology. Continuous fields use
+`f32`/`f64`; categorical voxel labels use `LabelU8`/`LabelU16`. Missing samples
+mean “not present,” not zero. MSG assigns no background semantics to any label;
+background values must be stored explicitly when desired.
+
+Label fields are exact and do not support normalization, error tolerances,
+continuous slicing, or MC33 extraction. `select_labels` forms the Boolean union
+of requested labels and `mesh_labels` encloses that union with exposed voxel
+faces. Other labels, missing voxels, and space beyond the volume are outside.
 
 A field whose values have been normalized to `[0, 1]` may retain its original
 physical bounds as `MsgNormalization { min, max }`. The metadata is available
@@ -181,6 +187,10 @@ mapping.
 
 ## Chunk codecs
 
+- `uniform:u8` and `uniform:u16` store one exact label for a chunk.
+- `palette:u8` and `palette:u16` store a sorted chunk-local label palette and
+  bit-packed 1-, 2-, 4-, 8-, or 16-bit indices.
+- `dense:u8` and `dense:u16` store exact native labels.
 - `uniform:f64` stores one value for all present points in a chunk.
 - `dense:f32` and `dense:f64` store every chunk slot directly.
 - `quantized:u8`, `quantized:u16`, and `quantized:u32` uniformly quantize a

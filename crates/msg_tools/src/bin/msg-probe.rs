@@ -293,6 +293,8 @@ fn dense_field_size(levels: &[MsgArchiveLevelInfo], scalar_type: MsgScalarType) 
 
 fn scalar_width(scalar_type: MsgScalarType) -> u128 {
     match scalar_type {
+        MsgScalarType::LabelU8 => 1,
+        MsgScalarType::LabelU16 => 2,
         MsgScalarType::F32 => 4,
         MsgScalarType::F64 => 8,
     }

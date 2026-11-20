@@ -5,18 +5,34 @@ use crate::sparse::{Aabb3u, GridAccessor, GridError, SparseGrid3};
 /// Logical precision exposed by an MSG scalar field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MsgScalarType {
+    LabelU8,
+    LabelU16,
     F32,
     F64,
+}
+
+impl MsgScalarType {
+    pub const fn is_label(self) -> bool {
+        matches!(self, Self::LabelU8 | Self::LabelU16)
+    }
+
+    pub const fn is_continuous(self) -> bool {
+        !self.is_label()
+    }
 }
 
 /// Owned sparse scalar samples for one field on one level.
 #[derive(Debug, Clone)]
 pub enum MsgScalarGrid {
+    LabelU8(SparseGrid3<u8>),
+    LabelU16(SparseGrid3<u16>),
     F32(SparseGrid3<f32>),
     F64(SparseGrid3<f64>),
 }
 
 pub(crate) enum MsgScalarAccessor<'a> {
+    LabelU8(GridAccessor<'a, u8>),
+    LabelU16(GridAccessor<'a, u16>),
     F32(GridAccessor<'a, f32>),
     F64(GridAccessor<'a, f64>),
     Archived(crate::archive::MsgArchiveScalarAccessor<'a>),
@@ -25,6 +41,8 @@ pub(crate) enum MsgScalarAccessor<'a> {
 impl MsgScalarGrid {
     pub fn new(bounds: UVec3, scalar_type: MsgScalarType) -> Self {
         match scalar_type {
+            MsgScalarType::LabelU8 => Self::LabelU8(SparseGrid3::new(bounds)),
+            MsgScalarType::LabelU16 => Self::LabelU16(SparseGrid3::new(bounds)),
             MsgScalarType::F32 => Self::F32(SparseGrid3::new(bounds)),
             MsgScalarType::F64 => Self::F64(SparseGrid3::new(bounds)),
         }
@@ -32,6 +50,8 @@ impl MsgScalarGrid {
 
     pub fn scalar_type(&self) -> MsgScalarType {
         match self {
+            Self::LabelU8(_) => MsgScalarType::LabelU8,
+            Self::LabelU16(_) => MsgScalarType::LabelU16,
             Self::F32(_) => MsgScalarType::F32,
             Self::F64(_) => MsgScalarType::F64,
         }
@@ -39,6 +59,8 @@ impl MsgScalarGrid {
 
     pub fn bounds(&self) -> UVec3 {
         match self {
+            Self::LabelU8(grid) => grid.bounds(),
+            Self::LabelU16(grid) => grid.bounds(),
             Self::F32(grid) => grid.bounds(),
             Self::F64(grid) => grid.bounds(),
         }
@@ -50,6 +72,8 @@ impl MsgScalarGrid {
 
     pub fn present_point_count(&self) -> usize {
         match self {
+            Self::LabelU8(grid) => grid.present_voxel_count(),
+            Self::LabelU16(grid) => grid.present_voxel_count(),
             Self::F32(grid) => grid.present_voxel_count(),
             Self::F64(grid) => grid.present_voxel_count(),
         }
@@ -57,6 +81,8 @@ impl MsgScalarGrid {
 
     pub fn get(&self, point: UVec3) -> Option<f64> {
         match self {
+            Self::LabelU8(grid) => grid.get(point).map(f64::from),
+            Self::LabelU16(grid) => grid.get(point).map(f64::from),
             Self::F32(grid) => grid.get(point).map(f64::from),
             Self::F64(grid) => grid.get(point),
         }
@@ -64,6 +90,8 @@ impl MsgScalarGrid {
 
     pub(crate) fn accessor(&self) -> MsgScalarAccessor<'_> {
         match self {
+            Self::LabelU8(grid) => MsgScalarAccessor::LabelU8(grid.accessor()),
+            Self::LabelU16(grid) => MsgScalarAccessor::LabelU16(grid.accessor()),
             Self::F32(grid) => MsgScalarAccessor::F32(grid.accessor()),
             Self::F64(grid) => MsgScalarAccessor::F64(grid.accessor()),
         }
@@ -71,6 +99,18 @@ impl MsgScalarGrid {
 
     pub fn set(&mut self, point: UVec3, value: f64) -> bool {
         match self {
+            Self::LabelU8(grid) => {
+                value.is_finite()
+                    && value.fract() == 0.0
+                    && (0.0..=f64::from(u8::MAX)).contains(&value)
+                    && grid.set(point, value as u8)
+            }
+            Self::LabelU16(grid) => {
+                value.is_finite()
+                    && value.fract() == 0.0
+                    && (0.0..=f64::from(u16::MAX)).contains(&value)
+                    && grid.set(point, value as u16)
+            }
             Self::F32(grid) => grid.set(point, value as f32),
             Self::F64(grid) => grid.set(point, value),
         }
@@ -78,6 +118,8 @@ impl MsgScalarGrid {
 
     pub fn clear(&mut self, point: UVec3) -> bool {
         match self {
+            Self::LabelU8(grid) => grid.clear(point),
+            Self::LabelU16(grid) => grid.clear(point),
             Self::F32(grid) => grid.clear(point),
             Self::F64(grid) => grid.clear(point),
         }
@@ -86,13 +128,100 @@ impl MsgScalarGrid {
     /// Transform all stored values while preserving sparse topology.
     pub fn map_values(&mut self, mut map: impl FnMut(f64) -> f64) {
         match self {
+            Self::LabelU8(grid) => grid.map_values(|value| {
+                let mapped = map(f64::from(value));
+                assert!(
+                    mapped.is_finite() && mapped.fract() == 0.0 && (0.0..=255.0).contains(&mapped)
+                );
+                mapped as u8
+            }),
+            Self::LabelU16(grid) => grid.map_values(|value| {
+                let mapped = map(f64::from(value));
+                assert!(
+                    mapped.is_finite()
+                        && mapped.fract() == 0.0
+                        && (0.0..=65535.0).contains(&mapped)
+                );
+                mapped as u16
+            }),
             Self::F32(grid) => grid.map_values(|value| map(f64::from(value)) as f32),
             Self::F64(grid) => grid.map_values(map),
         }
     }
 
+    pub fn write_u8_values(&mut self, aabb: Aabb3u, values: &[u8]) -> Result<(), GridError> {
+        match self {
+            Self::LabelU8(grid) => grid.write_aabb_values(aabb, values),
+            Self::LabelU16(grid) => {
+                let values = values.iter().copied().map(u16::from).collect::<Vec<_>>();
+                grid.write_aabb_values(aabb, &values)
+            }
+            Self::F32(grid) => {
+                let values = values.iter().copied().map(f32::from).collect::<Vec<_>>();
+                grid.write_aabb_values(aabb, &values)
+            }
+            Self::F64(grid) => {
+                let values = values.iter().copied().map(f64::from).collect::<Vec<_>>();
+                grid.write_aabb_values(aabb, &values)
+            }
+        }
+    }
+
+    pub fn write_u16_values(&mut self, aabb: Aabb3u, values: &[u16]) -> Result<(), GridError> {
+        match self {
+            Self::LabelU8(grid) => {
+                if values.iter().any(|&value| value > u16::from(u8::MAX)) {
+                    return Err(GridError::ValueNotRepresentable);
+                }
+                let values = values
+                    .iter()
+                    .copied()
+                    .map(|value| value as u8)
+                    .collect::<Vec<_>>();
+                grid.write_aabb_values(aabb, &values)
+            }
+            Self::LabelU16(grid) => grid.write_aabb_values(aabb, values),
+            Self::F32(grid) => {
+                let values = values.iter().copied().map(f32::from).collect::<Vec<_>>();
+                grid.write_aabb_values(aabb, &values)
+            }
+            Self::F64(grid) => {
+                let values = values.iter().copied().map(f64::from).collect::<Vec<_>>();
+                grid.write_aabb_values(aabb, &values)
+            }
+        }
+    }
+
     pub fn write_f32_values(&mut self, aabb: Aabb3u, values: &[f32]) -> Result<(), GridError> {
         match self {
+            Self::LabelU8(grid) => {
+                if values
+                    .iter()
+                    .any(|&value| !valid_label(value.into(), f64::from(u8::MAX)))
+                {
+                    return Err(GridError::ValueNotRepresentable);
+                }
+                let values = values
+                    .iter()
+                    .copied()
+                    .map(|value| value as u8)
+                    .collect::<Vec<_>>();
+                grid.write_aabb_values(aabb, &values)
+            }
+            Self::LabelU16(grid) => {
+                if values
+                    .iter()
+                    .any(|&value| !valid_label(value.into(), f64::from(u16::MAX)))
+                {
+                    return Err(GridError::ValueNotRepresentable);
+                }
+                let values = values
+                    .iter()
+                    .copied()
+                    .map(|value| value as u16)
+                    .collect::<Vec<_>>();
+                grid.write_aabb_values(aabb, &values)
+            }
             Self::F32(grid) => grid.write_aabb_values(aabb, values),
             Self::F64(grid) => {
                 let values = values.iter().copied().map(f64::from).collect::<Vec<_>>();
@@ -103,6 +232,34 @@ impl MsgScalarGrid {
 
     pub fn write_f64_values(&mut self, aabb: Aabb3u, values: &[f64]) -> Result<(), GridError> {
         match self {
+            Self::LabelU8(grid) => {
+                if values
+                    .iter()
+                    .any(|&value| !valid_label(value, f64::from(u8::MAX)))
+                {
+                    return Err(GridError::ValueNotRepresentable);
+                }
+                let values = values
+                    .iter()
+                    .copied()
+                    .map(|value| value as u8)
+                    .collect::<Vec<_>>();
+                grid.write_aabb_values(aabb, &values)
+            }
+            Self::LabelU16(grid) => {
+                if values
+                    .iter()
+                    .any(|&value| !valid_label(value, f64::from(u16::MAX)))
+                {
+                    return Err(GridError::ValueNotRepresentable);
+                }
+                let values = values
+                    .iter()
+                    .copied()
+                    .map(|value| value as u16)
+                    .collect::<Vec<_>>();
+                grid.write_aabb_values(aabb, &values)
+            }
             Self::F32(grid) => {
                 let values = values
                     .iter()
@@ -118,6 +275,7 @@ impl MsgScalarGrid {
     pub(crate) fn contains_non_finite(&self) -> bool {
         let mut found = false;
         match self {
+            Self::LabelU8(_) | Self::LabelU16(_) => {}
             Self::F32(grid) => grid.for_each_present_in_aabb(grid.bounds_aabb(), |_, value| {
                 found |= !value.is_finite();
             }),
@@ -130,6 +288,12 @@ impl MsgScalarGrid {
 
     pub(crate) fn for_each_value_in_aabb(&self, aabb: Aabb3u, mut visitor: impl FnMut(UVec3, f64)) {
         match self {
+            Self::LabelU8(grid) => grid.for_each_present_in_aabb(aabb, |position, value| {
+                visitor(position, f64::from(value));
+            }),
+            Self::LabelU16(grid) => grid.for_each_present_in_aabb(aabb, |position, value| {
+                visitor(position, f64::from(value));
+            }),
             Self::F32(grid) => grid.for_each_present_in_aabb(aabb, |position, value| {
                 visitor(position, f64::from(value));
             }),
@@ -144,6 +308,12 @@ impl MsgScalarGrid {
         translation: glam::I64Vec3,
     ) {
         match self {
+            Self::LabelU8(grid) => {
+                coarse_active_cubes.mask_out_by_presence_scaled(grid, ratio, translation);
+            }
+            Self::LabelU16(grid) => {
+                coarse_active_cubes.mask_out_by_presence_scaled(grid, ratio, translation);
+            }
             Self::F32(grid) => {
                 coarse_active_cubes.mask_out_by_presence_scaled(grid, ratio, translation);
             }
@@ -154,9 +324,15 @@ impl MsgScalarGrid {
     }
 }
 
+fn valid_label(value: f64, max: f64) -> bool {
+    value.is_finite() && value.fract() == 0.0 && (0.0..=max).contains(&value)
+}
+
 impl MsgScalarAccessor<'_> {
     pub(crate) fn get(&mut self, point: UVec3) -> anyhow::Result<Option<f64>> {
         match self {
+            Self::LabelU8(accessor) => Ok(accessor.get(point).map(f64::from)),
+            Self::LabelU16(accessor) => Ok(accessor.get(point).map(f64::from)),
             Self::F32(accessor) => Ok(accessor.get(point).map(f64::from)),
             Self::F64(accessor) => Ok(accessor.get(point)),
             Self::Archived(level) => level.get(point),

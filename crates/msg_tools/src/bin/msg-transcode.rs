@@ -156,6 +156,10 @@ fn parse_codec(value: &str) -> Result<MsgChunkCodecSelection> {
     Ok(match value {
         "auto:lossless" => MsgChunkCodecSelection::AutoLossless,
         "auto:smallest" => MsgChunkCodecSelection::AutoSmallest,
+        "dense:u8" => MsgChunkCodecSelection::Forced(MsgChunkCodec::DenseU8),
+        "dense:u16" => MsgChunkCodecSelection::Forced(MsgChunkCodec::DenseU16),
+        "palette:u8" => MsgChunkCodecSelection::Forced(MsgChunkCodec::PaletteU8),
+        "palette:u16" => MsgChunkCodecSelection::Forced(MsgChunkCodec::PaletteU16),
         "uniform:f64" => MsgChunkCodecSelection::Forced(MsgChunkCodec::UniformF64),
         "dense:f32" => MsgChunkCodecSelection::Forced(MsgChunkCodec::DenseF32),
         "dense:f64" => MsgChunkCodecSelection::Forced(MsgChunkCodec::DenseF64),

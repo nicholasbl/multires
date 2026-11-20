@@ -15,9 +15,10 @@ path = "src/bin/msg-probe.rs"
 anyhow.workspace = true
 clap.workspace = true
 glam.workspace = true
+image = "0.25"
 msg_amrex = { path = "../msg_amrex" }
 msg_vti = { path = "../msg_vti" }
 multires = { path = "../multires" }
 serde.workspace = true
 toml.workspace = true
-
+wildmatch = "2.7"

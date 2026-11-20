@@ -1,7 +1,8 @@
 //! Multiresolution sparse-grid (MSG) data structures and algorithms.
 //!
-//! MSG datasets contain finite, scalar, point-associated fields. Each field
-//! owns its sparse topology; level geometry is shared by the dataset.
+//! MSG datasets contain continuous `f32`/`f64` point fields and exact
+//! `u8`/`u16` voxel-label fields. Each field owns its sparse topology; level
+//! geometry is shared by the dataset.
 
 mod acceleration;
 pub mod archive;
@@ -9,6 +10,7 @@ mod dataset;
 pub mod decimate;
 mod geometry;
 pub mod isosurface;
+pub mod labels;
 mod mesh;
 mod point_grid;
 pub mod relax;
@@ -37,6 +39,7 @@ pub use isosurface::{
     IsosurfaceOptions, IsosurfaceTimings, PerLevelTimings, Sample, Surface, isosurface,
     isosurface_archive,
 };
+pub use labels::{LabelMeshOptions, mesh_label_mask, mesh_labels, select_labels};
 pub use mesh::{Mesh3D, RemoveDegenerateTrianglesOptions, remove_degenerate_triangles};
 pub use relax::{VertexRelaxOptions, VertexRelaxResult, VertexRelaxTimings, relax_mesh_vertices};
 pub use scalar::{MsgScalarGrid, MsgScalarType};
